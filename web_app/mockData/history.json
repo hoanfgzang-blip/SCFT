@@ -1,0 +1,12 @@
+[
+    {
+        "deviceName": "iPhone 14 Pro ",
+        "lastConnectedAt": "2026-06-01T10:00:00Z",
+        "status": "online"
+    },
+    {
+        "deviceName": "ipad Air",
+        "lastConnectedAt": "2026-03-01T10:00:00Z",
+        "status": "offline"
+    }
+]
