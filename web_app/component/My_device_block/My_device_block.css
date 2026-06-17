@@ -1,0 +1,36 @@
+.device-card {
+    width: 220px; 
+    height: 60px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+}
+.device-card p{
+    font-size: 10px;
+    color: #333;
+    margin: 0;
+}
+.device-card.online {
+    border-color: #2ecc71;
+}
+.device-card.online .status-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    background-color: #2ecc71;
+    border-radius: 50%;
+}
+
+.device-card.offline {
+    border-color: #bdc3c7;
+    background-color: #f9f9f9;
+    opacity: 0.7;
+}
+
+.device-card.offline .status-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    background-color: #7f8c8d;
+    border-radius: 50%;
+}

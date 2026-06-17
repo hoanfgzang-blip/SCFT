@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./Share/global.css">
+    <link rel="stylesheet" href="./page/Home/Index.css">
+    <title>Document</title>
+</head>
+
+<body>
+    <div class="app-layout">
+
+        <aside id="sidebar-container" class="roSidebar"></aside>
+
+        <div class="right-content">
+
+            <header id="header-container" class="roHeader"></header>
+
+            <main class="main-content">
+                <div class="home_content">
+                    <h1>Connecting Device</h1>
+                    <div class="connecting_device" id="connecting_device">
+                    </div>
+                </div>
+                <div class="home_content">
+                    <h1>My Devices</h1>
+                    <div class="my_device_wrapper">
+                        <div class="my_device" id="my_device">
+                        </div>
+                        <button class="add-device-btn">
+                            <img src="./asset/circle-plus.svg" alt="">
+                            Add Device
+                        </button>
+                    </div>
+                </div>
+                <div class="home_content">
+                    <h1>History Connect</h1>
+                    <div class="table-wrapper">
+                        <table class="history-table">
+
+                            <thead>
+                                <tr>
+                                    <th>Device Name</th>
+                                    <th>Last Time connected</th>
+                                    <th>ID</th>
+                                </tr>
+                            </thead>
+
+                            <tbody id="history_tbody">
+                            </tbody>
+
+                        </table>
+                    </div> 
+                </div>
+            </main>
+
+        </div>
+    </div>
+    <script src="./component/My_device_block/My_device_block.js"></script>
+    <script src="./component/Historytb/Htb.js"></script>
+    <script src="./Share/LoadComponent.js"></script>
+</body>
+
+</html>

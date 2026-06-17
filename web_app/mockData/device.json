@@ -1,0 +1,27 @@
+[
+  {
+    "id": "12345678",
+    "name": "iPhone 12 Pro",
+    "status": "online",
+    "type": "wifi",
+    "deviceType": "smartphone",
+    "using": true
+    
+  },
+    {
+    "id": "12665678",
+    "name": "iPhone 14",
+    "status": "online",
+    "type": "wifi",
+    "deviceType": "smartphone",
+    "using": false
+  },
+  {
+    "id": "13425678",
+    "name": "iPad Air",
+    "status": "offline",
+    "type": "cable",
+    "deviceType": "tablet",
+    "using": false
+  }
+]
