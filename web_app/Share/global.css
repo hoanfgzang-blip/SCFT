@@ -8,18 +8,61 @@
     box-sizing: border-box;
     font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
+:root {
+    --bg-main: #F7F9FB;     
+    --bg-card: #ffffff;     
+    --text-main: #000000;  
+    --text-sub: #333333;   
+    --border-color: #000000; 
+    --border-light: #e0e0e0; 
+    --offline-bg: #f9f9f9;
+    --offline-border: #bdc3c7;
+    --offline-text: #7f8c8d;
+    --offline-capacity: 0.7;
+    --menu-hover-bg: #f1f2f6;
+    --menu-hover-color: #2980b9;
+    --menu-active-bg: #E5FCFF;
+    --menu-active-text: #000;
+    --slider-bg: #c4c4c4;
+    --slider-thumb: #000;
+}
+
+body.dark-mode {
+    --bg-main: #121212;   
+    --bg-card: #1E1E1E;     
+    --text-main: #ffffff; 
+    --text-sub: #b3b3b3;   
+    --border-color: #555555; 
+    --border-light: #333333; 
+    --offline-bg: #262626;
+    --offline-border: #444444;
+    --offline-text: #777777;
+    --offline-capacity: 0.5;
+    --menu-hover-bg: #2c2c2c;
+    --menu-hover-text: #00d2ff;
+    --menu-active-bg: #E5FCFF; 
+    --menu-active-text: #000000;
+    --slider-bg: #444444;
+    --slider-thumb: #ffffff;
+}
+
+body {
+    background-color: var(--bg-main);
+    color: var(--text-main);
+    transition: background-color 0.3s ease, color 0.3s ease; 
+}
 a {
     text-decoration: none;
-    color: #000;
+    color: var(--text-main);
 }
 .app-layout {
     display: flex;         
-    height: 100vh;       
+    height: 100vh;    
+    overflow: hidden;   
 }
 
 .roSidebar {
-    width: 250px;         
-    background-color: #f4f4f4; 
+   width: auto;
 }
 
 .right-content {
@@ -30,10 +73,12 @@ a {
 
 .roHeader {
     height: 60px;          
-    background-color: #e0e0e0; 
+    background-color: var(--bg-card); 
+
 }
 
 .main-content {
     flex: 1;              
-    padding: 20px;         
+    padding: 20px;  
+    overflow-y: auto;       
 }

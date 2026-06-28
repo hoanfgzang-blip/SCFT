@@ -4,12 +4,20 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    border: 1px solid #e0e0e0;
+    border: 1px solid var(--border-light);
     border-radius: 12px;
+    padding: 0 12px;
+    transition: all 0.3s ease;
+    cursor: pointer;
+}
+.device-card h4 {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-main); 
 }
 .device-card p{
     font-size: 10px;
-    color: #333;
+    color: var(--text-sub);
     margin: 0;
 }
 .device-card.online {
@@ -23,14 +31,29 @@
 }
 
 .device-card.offline {
-    border-color: #bdc3c7;
-    background-color: #f9f9f9;
-    opacity: 0.7;
+    border-color: var(--offline-border);
+    background-color: var(--offline-bg);
+    opacity: var(--offline-capacity);
 }
 
 .device-card.offline .status-dot {
     display: inline-block;
     width: 8px; height: 8px;
-    background-color: #7f8c8d;
+    background-color: var(--offline-text);
     border-radius: 50%;
+}
+.device-card .device-icon svg path {
+    stroke: var(--text-main);
+    transition: stroke 0.3s ease;
+}
+body.dark-mode .device-card.offline .device-icon svg path {
+    stroke: var(--offline-text);
+}
+@media screen and (max-width: 900px) {
+    .device-card {
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        padding: 12px;
+    }
 }
