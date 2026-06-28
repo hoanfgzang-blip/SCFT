@@ -43,6 +43,12 @@ h3 {
     font-size: 1rem;
     background-color: transparent; 
     color: var(--text-main);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+#device_name_input:disabled {
+    cursor: default;
+    opacity: 0.5;
+    color: var(--text-sub) !important;
 }
 #edit_device_name{
     border: none;
@@ -73,6 +79,7 @@ h3 {
     flex-direction: column;
     border-radius: 8px;
     padding: 8px;
+    cursor: not-allowed;
 }
 body.dark-mode #edit_device_name svg path {
     stroke: #ffffff;
