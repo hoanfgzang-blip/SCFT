@@ -4,9 +4,12 @@
     flex-direction: column; 
     height: 100%;           
     padding: 20px;          
-    background-color: #F7F9FB; 
-    border-right: 1px solid #000000; 
+    background-color: var(--bg-card); 
+    border-right: 1px solid var(--border-color);
+    width: 250px;
+    transition: width 0.3s ease, padding 0.3s ease; 
 }
+
 .menu-btn img {
     width: 20px;
     height: 20px;
@@ -15,16 +18,21 @@
 .logoName {
     padding : 20px ;
     margin-bottom: 30px; 
+    transition: all 0.3s ease;
 }
+
 .logoName h1 {
-    color: #000;
+    color: var(--text-main);
     margin-bottom: 5px;
     font-weight: 800;
+    transition: font-size 0.3s ease;
 }
+
 .logoName p {
     font-size: 12px;
 }
-.sideBar_menu .sideBar_footer {
+
+.sideBar_menu, .sideBar_footer {
     display: flex;
     flex-direction: column; 
     gap: 15px;              
@@ -42,17 +50,71 @@
 }
 
 .menu-btn:hover {
-    background-color: #f1f2f6;
-    color: #2980b9;
+    background-color: var(--menu-hover-bg);
+    color: var(--menu-hover-color);
 }
+
 .sideBar_footer {
     margin-top: auto;
-    border-top: 1px solid #000000;
+    border-top: 1px solid var(--border-color);
     margin-left: -20px;
     margin-right: -20px;
     padding: 20px 20px 0 20px;
+    transition: all 0.3s ease;
 }
+
 .sideBar_footer img {
     width: 20px;
     height: 20px;
+}
+
+body.dark-mode .menu-btn img, 
+body.dark-mode .sideBar_footer img {
+    filter: brightness(1) invert(1);
+    transition: filter 0.3s ease;
+}
+
+.menu-btn.active {
+    background-color: var(--menu-active-bg);
+    color: var(--menu-active-text);
+}
+
+.menu-btn.active img,
+.sideBar_footer.active img {
+    filter: brightness(0) !important ;
+    transition: filter 0.3s ease;
+}
+
+@media screen and (max-width: 900px) {
+    .sideBar_container {
+        width: 80px; 
+        padding: 20px 10px;
+    }
+
+    .logoName {
+        padding: 0;
+        text-align: center;
+    }
+
+    .logoName p,
+    .menu-btn span {
+        display: none; 
+    }
+
+    .logoName h1 {
+        font-size: 1.2rem; 
+        margin-bottom: 0;
+    }
+
+    .menu-btn {
+        justify-content: center; 
+        padding: 12px 0;
+        gap: 0; 
+    }
+
+    .sideBar_footer {
+        margin-left: -10px;
+        margin-right: -10px;
+        padding: 20px 10px 0 10px;
+    }
 }

@@ -1,5 +1,5 @@
 // ==========================================
-// 1. CÁC HÀM TRỢ THỦ 
+// 1. CÁC HÀM DÙng lại
 // ==========================================
 function localSaver(key, value) {
     localStorage.setItem(key, value);
@@ -149,16 +149,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const bitrateSlider = document.getElementById('bitrate_slider');
     const bitrateText = document.getElementById('bitrate_text');
     
-    // Load Bitrate
     const savedBitrate = localLoader('SCFT_Bitrate', 12.5);
     bitrateSlider.value = savedBitrate;
     bitrateText.textContent = `${savedBitrate} mbps`;
-    updateSliderColor(bitrateSlider); // TRUYỀN THẺ INPUT
+    updateSliderColor(bitrateSlider); 
 
     bitrateSlider.addEventListener('input', (e) => {
         const currentVal = e.target.value;
         bitrateText.textContent = `${currentVal} mbps`;
-        updateSliderColor(bitrateSlider); // TRUYỀN THẺ INPUT
+        updateSliderColor(bitrateSlider); 
         localSaver('SCFT_Bitrate', currentVal);
     });
 
@@ -180,10 +179,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const savedTheme = localLoader('SCFT_Theme', 'light');
 
     if (savedTheme === 'dark') {
-        document.body.classList.add('dark-theme');
+        document.body.classList.add('dark-mode');
         document.getElementById('theme_dark').checked = true;
     } else {
-        document.body.classList.remove('dark-theme');
+        document.body.classList.remove('dark-mode');
         document.getElementById('theme_light').checked = true;
     }
 
@@ -191,9 +190,9 @@ document.addEventListener("DOMContentLoaded", () => {
         radio.addEventListener('change', (e) => {
             const selectedTheme = e.target.value;
             if (selectedTheme === 'dark') {
-                document.body.classList.add('dark-theme');
+                document.body.classList.add('dark-mode');
             } else {
-                document.body.classList.remove('dark-theme');
+                document.body.classList.remove('dark-mode');
             }
             localSaver('SCFT_Theme', selectedTheme);
         });
