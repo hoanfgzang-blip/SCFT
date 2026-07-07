@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="./Share/global.css">
-    <link rel="stylesheet" href="./component/page/FT.css">
-    <title>Document</title>
+    <link rel="stylesheet" href="./page/File_Transfer/FT.css">
+    <title>SCFT - File Transfer</title>
 </head>
 <body>
     <div class="app-layout">
@@ -16,12 +16,97 @@
 
             <header id="header-container" class="roHeader"></header>
 
-            <main class="main-content">
+            <main class="main-content file-transfer-page">
+                <section class="ft-toolbar">
+                    <div>
+                        <h1>File Transfer</h1>
+                        <p id="backend_status_text">Checking backend...</p>
+                    </div>
+                    <div class="ft-toolbar-actions">
+                        <button id="refresh_files_btn" class="secondary-btn" type="button">Refresh</button>
+                        <button id="open_backend_btn" class="secondary-btn" type="button">Backend</button>
+                    </div>
+                </section>
+
+                <section class="ft-grid">
+                    <div class="ft-panel upload-panel">
+                        <div class="panel-heading">
+                            <h2>Send File</h2>
+                            <span id="upload_limit_text">Max 2GB</span>
+                        </div>
+
+                        <label id="drop_zone" class="drop-zone" for="file_input">
+                            <input id="file_input" type="file">
+                            <img src="./asset/open-folder.svg" alt="">
+                            <strong id="selected_file_name">Choose a file</strong>
+                            <span id="selected_file_meta">Click to browse or drop a file here</span>
+                        </label>
+
+                        <div class="upload-actions">
+                            <button id="upload_btn" class="primary-btn" type="button" disabled>Upload</button>
+                            <button id="clear_file_btn" class="secondary-btn" type="button" disabled>Clear</button>
+                        </div>
+
+                        <div class="progress-shell" aria-label="Upload progress">
+                            <div id="upload_progress_bar" class="progress-bar"></div>
+                        </div>
+
+                        <p id="upload_message" class="status-message"></p>
+                    </div>
+
+                    <div class="ft-panel device-panel">
+                        <div class="panel-heading">
+                            <h2>This Device</h2>
+                            <span id="backend_status_badge" class="status-badge offline">Offline</span>
+                        </div>
+                        <div class="device-info-list">
+                            <div>
+                                <span>Device ID</span>
+                                <strong id="device_id_text">-</strong>
+                            </div>
+                            <div>
+                                <span>Local IP</span>
+                                <strong id="device_ip_text">-</strong>
+                            </div>
+                            <div>
+                                <span>Backend Port</span>
+                                <strong id="device_port_text">7878</strong>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="ft-panel files-panel">
+                    <div class="panel-heading">
+                        <h2>Received Files</h2>
+                        <span id="file_count_text">0 files</span>
+                    </div>
+
+                    <div id="empty_files" class="empty-state">
+                        No files uploaded yet.
+                    </div>
+
+                    <div id="files_table_wrapper" class="files-table-wrapper hidden">
+                        <table class="files-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Size</th>
+                                    <th>Sender</th>
+                                    <th>Uploaded</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="files_tbody"></tbody>
+                        </table>
+                    </div>
+                </section>
             </main>
 
         </div>
     </div>
 
     <script src="./Share/LoadComponent.js"></script>
+    <script src="./page/File_Transfer/FT.js"></script>
 </body>
 </html>
