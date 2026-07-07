@@ -1,0 +1,24 @@
+{
+  "name": "scft-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "node scripts/start-expo.js",
+    "android": "node scripts/start-expo.js --android",
+    "ios": "node scripts/start-expo.js --ios",
+    "web": "node scripts/start-expo.js --web"
+  },
+  "dependencies": {
+    "expo": "~54.0.0",
+    "expo-status-bar": "~3.0.8",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-svg": "15.12.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@expo/ngrok": "^4.1.3",
+    "babel-preset-expo": "~54.0.1"
+  }
+}
