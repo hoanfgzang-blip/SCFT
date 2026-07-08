@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./Share/global.css">
+    <link rel="stylesheet" href="./page/Screen_Copy/SC.css">
+    <title>SCFT - Screen Copy</title>
+</head>
+<body>
+    <div class="app-layout">
+
+        <aside id="sidebar-container" class="roSidebar"></aside>
+
+        <div class="right-content">
+
+            <header id="header-container" class="roHeader"></header>
+
+            <main class="main-content screen-copy-page">
+                <section class="sc-toolbar">
+                    <div>
+                        <h1>Screen Copy</h1>
+                        <p id="screen_status_text">Checking ADB...</p>
+                    </div>
+                    <div class="sc-toolbar-actions">
+                        <button id="refresh_device_btn" class="secondary-btn" type="button">Refresh</button>
+                        <button id="start_preview_btn" class="primary-btn" type="button">Start</button>
+                        <button id="stop_preview_btn" class="secondary-btn" type="button" disabled>Stop</button>
+                    </div>
+                </section>
+
+                <section class="sc-grid">
+                    <div class="sc-panel preview-panel">
+                        <div class="panel-heading">
+                            <h2>Android Preview</h2>
+                            <span id="frame_info_text">0 frames</span>
+                        </div>
+
+                        <div class="phone-shell">
+                            <img id="screen_preview_img" alt="Android screen preview">
+                            <div id="empty_preview" class="empty-preview">
+                                Connect an Android device with USB debugging enabled.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="sc-panel control-panel">
+                        <div class="panel-heading">
+                            <h2>ADB Device</h2>
+                            <span id="adb_status_badge" class="status-badge offline">Offline</span>
+                        </div>
+
+                        <div class="device-info-list">
+                            <div>
+                                <span>Device</span>
+                                <strong id="adb_device_text">-</strong>
+                            </div>
+                            <div>
+                                <span>ADB Path</span>
+                                <strong id="adb_path_text">-</strong>
+                            </div>
+                            <div>
+                                <span>Capture Rate</span>
+                                <select id="capture_rate_select">
+                                    <option value="1000">1 FPS</option>
+                                    <option value="500" selected>2 FPS</option>
+                                    <option value="200">5 FPS</option>
+                                </select>
+                            </div>
+                            <div>
+                                <span>Transport</span>
+                                <strong>USB ADB exec-out screencap</strong>
+                            </div>
+                        </div>
+
+                        <p id="screen_message" class="status-message"></p>
+                    </div>
+                </section>
+            </main>
+
+        </div>
+    </div>
+
+    <script src="./Share/LoadComponent.js"></script>
+    <script src="./page/Screen_Copy/SC.js"></script>
+</body>
+</html>

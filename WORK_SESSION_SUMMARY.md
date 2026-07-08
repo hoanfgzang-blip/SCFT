@@ -91,6 +91,45 @@ Frontend goi:
 http://127.0.0.1:7878
 ```
 
+### Frontend Screen Copy
+
+Them:
+
+```text
+web_app/SC.html
+web_app/page/Screen_Copy/SC.css
+web_app/page/Screen_Copy/SC.js
+```
+
+Sua sidebar:
+
+```text
+web_app/component/SideBar/Sidebar.html
+```
+
+UI hien co:
+
+```text
+ADB device status
+ADB path
+Start/Stop preview
+Refresh device
+Capture rate 1/2/5 FPS
+Android screen preview
+Frame count va capture time
+```
+
+Luong Screen Copy hien tai:
+
+```text
+Desktop Electron
+-> adb exec-out screencap -p
+-> Android screen PNG frame qua USB
+-> render trong Electron
+```
+
+Phan nay la prototype tu build bang ADB, khong phu thuoc scrcpy.
+
 ### Android app
 
 Thay template Hello Android bang man USB File Transfer:
@@ -181,6 +220,7 @@ Boundary delete missing file: 404
 Boundary >2GB Content-Length: 413
 node --check main.js: OK
 node --check web_app/page/File_Transfer/FT.js: OK
+node --check web_app/page/Screen_Copy/SC.js: OK
 adb version: OK
 Android :app:compileDebugKotlin: BUILD SUCCESSFUL
 ```
@@ -229,6 +269,8 @@ Da co luong truyen file qua day USB theo cach ADB reverse tunnel.
 
 Nghia la app Android upload file qua `127.0.0.1:7878`, va ADB reverse dua request ve Java backend tren PC qua cap USB.
 
+Da co prototype Screen Copy tren desktop theo cach ADB screencap. Khi dien thoai that duoc `adb devices` nhan la `device`, mo trang Screen Copy, bam Start de xem preview man hinh Android.
+
 ## Chua lam
 
 ```text
@@ -237,6 +279,8 @@ USB-only mode trong Electron UI
 Hien thi Android device list tren desktop
 Tu bao loi neu adb unauthorized/no device
 Android download file tu desktop
+Screen Copy real-time encode/decode giong scrcpy
+Forward input mouse/keyboard tu desktop sang Android
 Dong goi backend Java thanh jar thay vi compile moi lan
 Dong goi Electron app release
 Test tren thiet bi Android that
@@ -255,6 +299,10 @@ backend/src/main/java/com/scft/backend/ScftBackendServer.java
 web_app/FT.html
 web_app/page/File_Transfer/FT.css
 web_app/page/File_Transfer/FT.js
+web_app/SC.html
+web_app/page/Screen_Copy/SC.css
+web_app/page/Screen_Copy/SC.js
+web_app/component/SideBar/Sidebar.html
 Android/app/src/main/AndroidManifest.xml
 Android/app/src/main/java/com/example/myapplication/MainActivity.kt
 ```

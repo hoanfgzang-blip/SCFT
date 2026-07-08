@@ -50,6 +50,22 @@ web_app/page/File_Transfer/FT.js
 web_app/page/File_Transfer/FT.css
 ```
 
+Trang Screen Copy nam tai:
+
+```text
+web_app/SC.html
+web_app/page/Screen_Copy/SC.js
+web_app/page/Screen_Copy/SC.css
+```
+
+Screen Copy dang di theo huong tu build bang ADB, khong phu thuoc scrcpy. Prototype hien tai dung:
+
+```text
+Desktop Electron -> adb exec-out screencap -p -> Android screen PNG frames
+```
+
+Day la buoc dau de co preview man hinh qua USB. Cac buoc tiep theo neu muon giong scrcpy hon la tach service Android, encode frame va gui input command qua ADB transport.
+
 Chay app Electron:
 
 ```powershell
