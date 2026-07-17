@@ -2,12 +2,14 @@ param(
     [int]$Port = 7878,
     [string]$Storage = "backend/storage",
     [string]$OutDir = "backend/out",
+    [string]$JavaExe = "",
+    [switch]$SkipCompile,
     [switch]$CompileOnly
 )
 
 $ErrorActionPreference = "Stop"
 
-$java = Get-Command java -ErrorAction SilentlyContinue
+$java = if ($JavaExe) { Get-Item -LiteralPath $JavaExe -ErrorAction SilentlyContinue } else { Get-Command java -ErrorAction SilentlyContinue }
 $javac = Get-Command javac -ErrorAction SilentlyContinue
 $sourceFile = Join-Path $PSScriptRoot "src/main/java/com/scft/backend/ScftBackendServer.java"
 $classFile = Join-Path $OutDir "com/scft/backend/ScftBackendServer.class"
@@ -28,9 +30,9 @@ if (-not $java) {
     throw "Java runtime not found. Install Java 11+ and make sure java is available."
 }
 
-$needsCompile = -not (Test-Path $classFile)
+$needsCompile = (-not $SkipCompile) -and (-not (Test-Path $classFile))
 
-if (-not $needsCompile) {
+if ((-not $SkipCompile) -and (-not $needsCompile)) {
     $needsCompile = (Get-Item $sourceFile).LastWriteTimeUtc -gt (Get-Item $classFile).LastWriteTimeUtc
 }
 
@@ -47,4 +49,9 @@ if ($CompileOnly) {
     exit 0
 }
 
-& $java -cp $OutDir com.scft.backend.ScftBackendServer --port $Port --storage $Storage
+if (-not (Test-Path $classFile)) {
+    throw "Java backend class not found. Rebuild the app before running."
+}
+
+$javaPath = if ($java.FullName) { $java.FullName } else { $java.Source }
+& $javaPath -cp $OutDir com.scft.backend.ScftBackendServer --port $Port --storage $Storage

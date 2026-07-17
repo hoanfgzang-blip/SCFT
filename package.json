@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "backend:compile": "powershell -ExecutionPolicy Bypass -File ./backend/run.ps1 -CompileOnly",
+    "runtime:prepare": "powershell -ExecutionPolicy Bypass -File ./scripts/prepare-runtime.ps1",
     "dist": "powershell -ExecutionPolicy Bypass -File ./scripts/build-win.ps1",
     "dist:dir": "npm run backend:compile && electron-builder --win --dir"
   },
@@ -39,6 +40,16 @@
       "backend/run.ps1",
       "backend/src/**/*",
       "backend/out/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build-resources/java-runtime",
+        "to": "java-runtime"
+      },
+      {
+        "from": "build-resources/platform-tools",
+        "to": "platform-tools"
+      }
     ],
     "win": {
       "target": [

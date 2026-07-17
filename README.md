@@ -86,7 +86,7 @@ Ban build se nam trong:
 dist/
 ```
 
-Khong can Docker de dong goi desktop app. May chay ban `.exe` van can Java runtime/JDK 11+ va ADB neu dung USB transfer/screen copy.
+Khong can Docker de dong goi desktop app. Lenh build se bundle Java runtime va Android platform-tools vao ban `.exe`, nen nguoi dung chi can chay app. Khi dung USB transfer/screen copy, nguoi dung van can cap USB data, bat Developer Options, bat USB debugging va chap nhan prompt tren dien thoai.
 
 Khi chay `npm start`, Electron se tu bat Java backend. Neu muon chay backend rieng de debug:
 

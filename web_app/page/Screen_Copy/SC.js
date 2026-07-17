@@ -45,9 +45,21 @@ function bindEvents() {
 }
 
 function getAdbCandidates() {
-    const candidates = ["adb.exe", "adb"];
+    const candidates = [];
     const localAppData = process.env.LOCALAPPDATA;
     const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+    const resourceRoot = process.resourcesPath;
+
+    if (process.env.SCFT_ADB_PATH) {
+        candidates.push(process.env.SCFT_ADB_PATH);
+    }
+
+    if (resourceRoot) {
+        candidates.push(path.join(resourceRoot, "platform-tools", "adb.exe"));
+    }
+
+    candidates.push(path.join(__dirname, "..", "..", "..", "build-resources", "platform-tools", "adb.exe"));
+    candidates.push("adb.exe", "adb");
 
     if (androidHome) {
         candidates.unshift(path.join(androidHome, "platform-tools", "adb.exe"));

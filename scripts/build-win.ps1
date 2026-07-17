@@ -12,6 +12,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Backend compile failed"
 }
 
+npm run runtime:prepare
+if ($LASTEXITCODE -ne 0) {
+    throw "Runtime prepare failed"
+}
+
 foreach ($target in @($unpacked, $tmp)) {
     if (Test-Path -LiteralPath $target) {
         $resolved = (Resolve-Path -LiteralPath $target).Path
