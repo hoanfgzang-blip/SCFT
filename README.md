@@ -73,6 +73,21 @@ npm install
 npm start
 ```
 
+Dong goi app thanh file Windows `.exe`:
+
+```powershell
+npm install
+npm run dist
+```
+
+Ban build se nam trong:
+
+```text
+dist/
+```
+
+Khong can Docker de dong goi desktop app. May chay ban `.exe` van can Java runtime/JDK 11+ va ADB neu dung USB transfer/screen copy.
+
 Khi chay `npm start`, Electron se tu bat Java backend. Neu muon chay backend rieng de debug:
 
 ```powershell

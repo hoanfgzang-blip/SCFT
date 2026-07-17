@@ -4,7 +4,10 @@
   "description": "",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "backend:compile": "powershell -ExecutionPolicy Bypass -File ./backend/run.ps1 -CompileOnly",
+    "dist": "powershell -ExecutionPolicy Bypass -File ./scripts/build-win.ps1",
+    "dist:dir": "npm run backend:compile && electron-builder --win --dir"
   },
   "repository": {
     "type": "git",
@@ -19,6 +22,43 @@
   },
   "homepage": "https://github.com/hoanfgzang-blip/SCFT#readme",
   "devDependencies": {
-    "electron": "^42.5.0"
+    "electron": "^42.5.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.scft.desktop",
+    "productName": "SCFT",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "web_app/**/*",
+      "backend/run.ps1",
+      "backend/src/**/*",
+      "backend/out/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

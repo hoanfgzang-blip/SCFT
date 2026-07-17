@@ -9,11 +9,21 @@ function startBackend() {
     if (backendProcess) return;
 
     const scriptPath = path.join(__dirname, 'backend', 'run.ps1');
+    const backendDataPath = path.join(app.getPath('userData'), 'backend');
+    const backendStoragePath = path.join(backendDataPath, 'storage');
+    const backendOutPath = path.join(backendDataPath, 'out');
+
     backendProcess = spawn('powershell.exe', [
         '-ExecutionPolicy',
         'Bypass',
         '-File',
-        scriptPath
+        scriptPath,
+        '-Port',
+        '7878',
+        '-Storage',
+        backendStoragePath,
+        '-OutDir',
+        backendOutPath
     ], {
         cwd: __dirname,
         windowsHide: true,
