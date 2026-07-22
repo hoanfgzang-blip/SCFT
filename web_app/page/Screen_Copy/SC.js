@@ -1,12 +1,12 @@
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const path = require("path");
 const os = require("os");
 
 const state = {
     adbPath: null,
     running: false,
-    inFlight: false,
-    timer: null,
+    adbProcess: null,
+    decoder: null,
     frameCount: 0
 };
 
@@ -26,9 +26,10 @@ function bindElements() {
     elements.badge = document.getElementById("adb_status_badge");
     elements.deviceText = document.getElementById("adb_device_text");
     elements.adbPathText = document.getElementById("adb_path_text");
-    elements.rateSelect = document.getElementById("capture_rate_select");
+    elements.resolutionSelect = document.getElementById("screen_resolution_select");
+    elements.bitrateSelect = document.getElementById("screen_bitrate_select");
     elements.message = document.getElementById("screen_message");
-    elements.preview = document.getElementById("screen_preview_img");
+    elements.canvas = document.getElementById("screen_preview_canvas");
     elements.phoneShell = document.querySelector(".phone-shell");
     elements.frameInfo = document.getElementById("frame_info_text");
 }
@@ -37,11 +38,21 @@ function bindEvents() {
     elements.refreshButton.addEventListener("click", refreshDevice);
     elements.startButton.addEventListener("click", startPreview);
     elements.stopButton.addEventListener("click", stopPreview);
-    elements.rateSelect.addEventListener("change", () => {
-        if (!state.running) return;
-        stopPreview();
-        startPreview();
-    });
+
+    if (elements.resolutionSelect) {
+        elements.resolutionSelect.addEventListener("change", restartIfRunning);
+    }
+    if (elements.bitrateSelect) {
+        elements.bitrateSelect.addEventListener("change", restartIfRunning);
+    }
+
+    window.addEventListener("beforeunload", stopPreview);
+}
+
+function restartIfRunning() {
+    if (!state.running) return;
+    stopPreview();
+    startPreview();
 }
 
 function getAdbCandidates() {
@@ -59,6 +70,8 @@ function getAdbCandidates() {
     }
 
     candidates.push(path.join(__dirname, "..", "..", "..", "build-resources", "platform-tools", "adb.exe"));
+    candidates.push(path.join(os.homedir(), "OneDrive", "Documents", "platform-tools", "adb.exe"));
+    candidates.push(path.join(os.homedir(), "Documents", "platform-tools", "adb.exe"));
     candidates.push("adb.exe", "adb");
 
     if (androidHome) {
@@ -132,7 +145,7 @@ async function refreshDevice() {
 
         elements.deviceText.textContent = device;
         setStatus("ADB device ready.", true);
-        setMessage("Ready to capture Android screen over USB.", "success");
+        setMessage("Ready to stream Android screen over USB (H.264 WebCodecs).", "success");
     } catch (error) {
         setStatus("ADB unavailable.", false);
         setMessage(error.message, "error");
@@ -143,38 +156,6 @@ function parseDevice(output) {
     const lines = output.split(/\r?\n/);
     const line = lines.find(item => /\tdevice$/.test(item.trim()));
     return line ? line.trim().split(/\s+/)[0] : null;
-}
-
-async function startPreview() {
-    if (state.running) return;
-
-    const ready = await ensureDeviceReady();
-    if (!ready) return;
-
-    state.running = true;
-    state.frameCount = 0;
-    elements.startButton.disabled = true;
-    elements.stopButton.disabled = false;
-    elements.refreshButton.disabled = true;
-    setMessage("Capturing screen...", "success");
-
-    await captureFrame();
-    if (!state.running) return;
-
-    state.timer = setInterval(captureFrame, Number(elements.rateSelect.value));
-}
-
-function stopPreview() {
-    state.running = false;
-
-    if (state.timer) {
-        clearInterval(state.timer);
-        state.timer = null;
-    }
-
-    if (elements.startButton) elements.startButton.disabled = false;
-    if (elements.stopButton) elements.stopButton.disabled = true;
-    if (elements.refreshButton) elements.refreshButton.disabled = false;
 }
 
 async function ensureDeviceReady() {
@@ -199,32 +180,93 @@ async function ensureDeviceReady() {
     }
 }
 
-async function captureFrame() {
-    if (!state.running || state.inFlight) return;
+async function startPreview() {
+    if (state.running) return;
 
-    state.inFlight = true;
-    const startedAt = Date.now();
+    const ready = await ensureDeviceReady();
+    if (!ready) return;
+
+    state.running = true;
+    state.frameCount = 0;
+    elements.startButton.disabled = true;
+    elements.stopButton.disabled = false;
+    elements.refreshButton.disabled = true;
+    setMessage("Streaming screen in real-time...", "success");
 
     try {
-        const result = await runAdb(["exec-out", "screencap", "-p"], {
-            encoding: "buffer",
-            maxBuffer: 32 * 1024 * 1024
+        state.decoder = new H264StreamDecoder(elements.canvas, (stats) => {
+            elements.phoneShell.classList.add("has-frame");
+            elements.frameInfo.textContent = `${stats.frameCount} frames | ${stats.fps} FPS (${stats.width}x${stats.height})`;
+        });
+    } catch (err) {
+        setMessage(err.message, "error");
+        stopPreview();
+        return;
+    }
+
+    const resolution = elements.resolutionSelect ? elements.resolutionSelect.value : "1280x720";
+    const bitrate = elements.bitrateSelect ? elements.bitrateSelect.value : "4000000";
+    const adbCommand = state.adbPath || "adb";
+
+    const spawnArgs = [
+        "exec-out",
+        "screenrecord",
+        "--output-format=h264",
+        "--size", resolution,
+        "--bit-rate", bitrate,
+        "--time-limit", "1800",
+        "-"
+    ];
+
+    try {
+        state.adbProcess = spawn(adbCommand, spawnArgs, { windowsHide: true });
+
+        state.adbProcess.stdout.on("data", (chunk) => {
+            if (!state.running || !state.decoder) return;
+            state.decoder.feedChunk(chunk);
         });
 
-        if (!result.stdout || result.stdout.length === 0) {
-            throw new Error("Empty screen frame.");
-        }
+        state.adbProcess.stderr.on("data", (data) => {
+            console.warn("ADB screenrecord stderr:", data.toString());
+        });
 
-        elements.preview.src = `data:image/png;base64,${result.stdout.toString("base64")}`;
-        elements.phoneShell.classList.add("has-frame");
-        state.frameCount += 1;
-        elements.frameInfo.textContent = `${state.frameCount} frames - ${Date.now() - startedAt} ms`;
-    } catch (error) {
-        setMessage(error.message, "error");
+        state.adbProcess.on("error", (err) => {
+            setMessage("Error launching ADB screenrecord: " + err.message, "error");
+            stopPreview();
+        });
+
+        state.adbProcess.on("close", (code) => {
+            if (state.running) {
+                stopPreview();
+            }
+        });
+    } catch (err) {
+        setMessage("Failed to spawn screenrecord: " + err.message, "error");
         stopPreview();
-    } finally {
-        state.inFlight = false;
     }
+}
+
+function stopPreview() {
+    state.running = false;
+
+    if (state.adbProcess) {
+        try {
+            state.adbProcess.stdout.removeAllListeners();
+            state.adbProcess.stderr.removeAllListeners();
+            state.adbProcess.kill("SIGINT");
+        } catch (e) {}
+        state.adbProcess = null;
+    }
+
+    if (state.decoder) {
+        state.decoder.destroy();
+        state.decoder = null;
+    }
+
+    if (elements.startButton) elements.startButton.disabled = false;
+    if (elements.stopButton) elements.stopButton.disabled = true;
+    if (elements.refreshButton) elements.refreshButton.disabled = false;
+    if (elements.phoneShell) elements.phoneShell.classList.remove("has-frame");
 }
 
 function setStatus(text, online) {

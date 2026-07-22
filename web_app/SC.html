@@ -37,7 +37,7 @@
                         </div>
 
                         <div class="phone-shell">
-                            <img id="screen_preview_img" alt="Android screen preview">
+                            <canvas id="screen_preview_canvas"></canvas>
                             <div id="empty_preview" class="empty-preview">
                                 Connect an Android device with USB debugging enabled.
                             </div>
@@ -60,16 +60,24 @@
                                 <strong id="adb_path_text">-</strong>
                             </div>
                             <div>
-                                <span>Capture Rate</span>
-                                <select id="capture_rate_select">
-                                    <option value="1000">1 FPS</option>
-                                    <option value="500" selected>2 FPS</option>
-                                    <option value="200">5 FPS</option>
+                                <span>Resolution</span>
+                                <select id="screen_resolution_select">
+                                    <option value="1280x720" selected>720p (1280x720 - Mượt)</option>
+                                    <option value="1920x1080">1080p (1920x1080 - Nét)</option>
+                                    <option value="854x480">480p (854x480 - Trễ thấp)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <span>Bitrate</span>
+                                <select id="screen_bitrate_select">
+                                    <option value="2000000">2 Mbps</option>
+                                    <option value="4000000" selected>4 Mbps (Khuyên dùng)</option>
+                                    <option value="8000000">8 Mbps (Chất lượng cao)</option>
                                 </select>
                             </div>
                             <div>
                                 <span>Transport</span>
-                                <strong>USB ADB exec-out screencap</strong>
+                                <strong>USB ADB H.264 Hardware Stream (WebCodecs)</strong>
                             </div>
                         </div>
 
@@ -82,6 +90,7 @@
     </div>
 
     <script src="./Share/LoadComponent.js"></script>
+    <script src="./page/Screen_Copy/h264_stream_decoder.js"></script>
     <script src="./page/Screen_Copy/SC.js"></script>
 </body>
 </html>

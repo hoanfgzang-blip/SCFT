@@ -72,14 +72,16 @@
     background: #000;
 }
 
-.phone-shell img {
+.phone-shell img,
+.phone-shell canvas {
     display: none;
     width: 100%;
     height: 100%;
     object-fit: contain;
 }
 
-.phone-shell.has-frame img {
+.phone-shell.has-frame img,
+.phone-shell.has-frame canvas {
     display: block;
 }
 
@@ -224,4 +226,9 @@
     .sc-grid {
         grid-template-columns: 1fr;
     }
+}
+
+#screen_preview_canvas{
+    width:100%;
+    height:auto;
 }
