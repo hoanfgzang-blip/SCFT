@@ -56,7 +56,7 @@ function prepareBundledRuntime() {
 }
 
 function getBundledBackendOutPath() {
-    return path.join(__dirname, 'backend', 'out');
+    return path.join('backend', 'out');
 }
 
 function startBackend() {
