@@ -1,41 +1,41 @@
-.screen-copy-page {
+﻿.pc-screen-page {
     display: flex;
     flex-direction: column;
     gap: 20px;
     padding: 30px;
 }
 
-.sc-toolbar {
+.pc-toolbar {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 16px;
 }
 
-.sc-toolbar h1 {
+.pc-toolbar h1 {
     font-size: 24px;
     font-weight: 600;
     margin-bottom: 6px;
 }
 
-.sc-toolbar p {
+.pc-toolbar p {
     color: var(--text-sub);
     font-size: 14px;
 }
 
-.sc-toolbar-actions {
+.pc-toolbar-actions {
     display: flex;
     gap: 10px;
     align-items: center;
 }
 
-.sc-grid {
+.pc-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
     gap: 20px;
 }
 
-.sc-panel {
+.pc-panel {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -60,28 +60,24 @@
     font-size: 13px;
 }
 
-.phone-shell {
+.desktop-preview {
     position: relative;
-    width: 100%;
-    height: min(72vh, 760px);
-    min-height: 520px;
-    margin: 0 auto;
+    min-height: 420px;
     border: 1px solid var(--border-color);
     border-radius: 8px;
     overflow: hidden;
     background: #000;
 }
 
-.phone-shell img,
-.phone-shell canvas {
+.desktop-preview img {
     display: none;
     width: 100%;
     height: 100%;
+    min-height: 420px;
     object-fit: contain;
 }
 
-.phone-shell.has-frame img,
-.phone-shell.has-frame canvas {
+.desktop-preview.has-frame img {
     display: block;
 }
 
@@ -97,12 +93,13 @@
     background: #111;
 }
 
-.phone-shell.has-frame .empty-preview {
+.desktop-preview.has-frame .empty-preview {
     display: none;
 }
 
 .primary-btn,
-.secondary-btn {
+.secondary-btn,
+.link-btn {
     border-radius: 8px;
     cursor: pointer;
     font-weight: 600;
@@ -116,20 +113,29 @@
     padding: 10px 18px;
 }
 
-.secondary-btn {
+.secondary-btn,
+.link-btn {
     border: 1px solid var(--border-color);
     background: var(--bg-card);
     color: var(--text-main);
     padding: 10px 16px;
 }
 
+.link-btn {
+    width: fit-content;
+    padding: 7px 10px;
+    font-size: 12px;
+}
+
 .primary-btn:disabled,
-.secondary-btn:disabled {
+.secondary-btn:disabled,
+.link-btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;
 }
 
-.secondary-btn:hover:not(:disabled) {
+.secondary-btn:hover:not(:disabled),
+.link-btn:hover:not(:disabled) {
     background: var(--menu-hover-bg);
 }
 
@@ -150,44 +156,45 @@
     color: var(--offline-text);
 }
 
-.device-info-list {
+.link-list {
     display: flex;
     flex-direction: column;
     gap: 14px;
 }
 
-.device-info-list div {
+.link-list div {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 7px;
     padding-bottom: 14px;
     border-bottom: 1px solid var(--border-light);
 }
 
-.device-info-list div:last-child {
-    padding-bottom: 0;
-    border-bottom: none;
-}
-
-.device-info-list span {
+.link-list span,
+.guide-box span {
     color: var(--text-sub);
     font-size: 12px;
 }
 
-.device-info-list strong {
+.link-list strong {
     color: var(--text-main);
     font-size: 14px;
     overflow-wrap: anywhere;
 }
 
-.device-info-list select {
-    width: 100%;
-    border: 1px solid var(--border-color);
+.guide-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 16px;
+    padding: 14px;
+    border: 1px solid var(--border-light);
     border-radius: 8px;
-    background: var(--bg-card);
-    color: var(--text-main);
-    padding: 9px 10px;
-    font-weight: 600;
+    background: var(--bg-main);
+}
+
+.guide-box strong {
+    font-size: 14px;
 }
 
 .status-message {
@@ -206,30 +213,24 @@
 }
 
 @media screen and (max-width: 900px) {
-    .screen-copy-page {
+    .pc-screen-page {
         padding: 18px;
     }
 
-    .sc-toolbar {
+    .pc-toolbar {
         align-items: stretch;
         flex-direction: column;
     }
 
-    .sc-toolbar-actions {
+    .pc-toolbar-actions {
         width: 100%;
     }
 
-    .sc-toolbar-actions button {
+    .pc-toolbar-actions button {
         flex: 1;
     }
 
-    .sc-grid {
+    .pc-grid {
         grid-template-columns: 1fr;
     }
-}
-
-#screen_preview_canvas {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
 }

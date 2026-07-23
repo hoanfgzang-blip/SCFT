@@ -134,3 +134,28 @@ Neu tu dong khong duoc, chay thu cong:
 adb devices
 adb reverse tcp:7878 tcp:7878
 ```
+## PC screen share to phone
+
+Trang PC Screen Share nam tai:
+
+```text
+web_app/PCScreen.html
+web_app/page/PC_Screen/PCScreen.js
+web_app/page/PC_Screen/PCScreen.css
+```
+
+Backend cung cap:
+
+```text
+GET /api/screen/status
+GET /api/screen/frame
+GET /api/screen/view
+```
+
+Dien thoai co the mo:
+
+```text
+http://127.0.0.1:7878/api/screen/view
+```
+
+Neu dung USB ADB reverse, hoac mo LAN URL hien trong app neu dien thoai va PC cung mang. Tinh nang hien tai la mirror/preview man hinh PC len dien thoai. De lam second monitor dung nghia extend display cho Windows/macOS/Linux can virtual display driver rieng, khong the chi lam bang web page/backend Java.

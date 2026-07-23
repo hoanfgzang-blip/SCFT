@@ -5,6 +5,21 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
+import java.awt.AWTException;
+import java.awt.Graphics2D;
+import java.awt.GraphicsDevice;
+import java.awt.GraphicsEnvironment;
+import java.awt.Image;
+import java.awt.Rectangle;
+import java.awt.RenderingHints;
+import java.awt.Robot;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -69,6 +84,7 @@ public final class ScftBackendServer {
         server.createContext("/api/health", withCors(this::handleHealth));
         server.createContext("/api/device", withCors(this::handleDevice));
         server.createContext("/api/files", withCors(this::handleFiles));
+        server.createContext("/api/screen", withCors(this::handleScreen));
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
 
@@ -155,6 +171,94 @@ public final class ScftBackendServer {
         sendJson(exchange, 404, "{\"error\":\"Route not found\"}");
     }
 
+    private void handleScreen(HttpExchange exchange) throws Exception {
+        String method = exchange.getRequestMethod();
+        String path = exchange.getRequestURI().getPath();
+
+        if (!"GET".equalsIgnoreCase(method)) {
+            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+            return;
+        }
+
+        if ("/api/screen".equals(path) || "/api/screen/".equals(path) || "/api/screen/status".equals(path)) {
+            handleScreenStatus(exchange);
+            return;
+        }
+
+        if ("/api/screen/frame".equals(path)) {
+            handleScreenFrame(exchange);
+            return;
+        }
+
+        if ("/api/screen/view".equals(path)) {
+            handleScreenView(exchange);
+            return;
+        }
+
+        sendJson(exchange, 404, "{\"error\":\"Route not found\"}");
+    }
+
+    private void handleScreenStatus(HttpExchange exchange) throws IOException {
+        boolean available = !GraphicsEnvironment.isHeadless();
+        int displays = 0;
+        String error = "";
+
+        if (available) {
+            try {
+                displays = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices().length;
+            } catch (Exception exception) {
+                available = false;
+                error = exception.getMessage();
+            }
+        } else {
+            error = "Screen capture is unavailable in headless mode";
+        }
+
+        String body = "{"
+                + "\"available\":" + available + ","
+                + "\"displays\":" + displays + ","
+                + "\"viewUrl\":\"/api/screen/view\","
+                + "\"frameUrl\":\"/api/screen/frame\","
+                + "\"error\":\"" + json(error) + "\""
+                + "}";
+        sendJson(exchange, 200, body);
+    }
+
+    private void handleScreenFrame(HttpExchange exchange) throws IOException, AWTException {
+        if (GraphicsEnvironment.isHeadless()) {
+            sendJson(exchange, 503, "{\"error\":\"Screen capture is unavailable in headless mode\"}");
+            return;
+        }
+
+        Map<String, String> params = queryParams(exchange.getRequestURI());
+        double scale = clampDouble(params.get("scale"), 0.25, 1.0, 0.65);
+        float quality = (float) clampDouble(params.get("quality"), 0.25, 0.95, 0.7);
+        byte[] image = captureScreenJpeg(scale, quality);
+
+        Headers headers = exchange.getResponseHeaders();
+        headers.set("Content-Type", "image/jpeg");
+        headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        headers.set("Pragma", "no-cache");
+        headers.set("Content-Length", Integer.toString(image.length));
+        exchange.sendResponseHeaders(200, image.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(image);
+        }
+    }
+
+    private void handleScreenView(HttpExchange exchange) throws IOException {
+        String body = "<!doctype html>"
+                + "<html><head><meta charset=\"utf-8\">"
+                + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+                + "<title>SCFT PC Screen</title>"
+                + "<style>html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family:Arial,sans-serif;overflow:hidden}#screen{width:100vw;height:100vh;object-fit:contain;background:#000}.bar{position:fixed;left:12px;right:12px;bottom:12px;display:flex;gap:8px;align-items:center;justify-content:center}.bar button,.bar select{border:1px solid #fff;background:rgba(0,0,0,.72);color:#fff;border-radius:8px;padding:10px 12px;font-weight:700}</style>"
+                + "</head><body>"
+                + "<img id=\"screen\" alt=\"PC screen\">"
+                + "<div class=\"bar\"><button id=\"full\">Fullscreen</button><select id=\"rate\"><option value=\"1000\">1 FPS</option><option value=\"500\" selected>2 FPS</option><option value=\"250\">4 FPS</option><option value=\"150\">6 FPS</option></select></div>"
+                + "<script>const img=document.getElementById('screen');const rate=document.getElementById('rate');let timer=null;function tick(){img.src='/api/screen/frame?scale=0.7&quality=0.68&t='+Date.now()}function run(){if(timer)clearInterval(timer);tick();timer=setInterval(tick,Number(rate.value))}rate.onchange=run;document.getElementById('full').onclick=()=>document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();run();</script>"
+                + "</body></html>";
+        sendHtml(exchange, 200, body);
+    }
     private void handleListFiles(HttpExchange exchange) throws IOException {
         List<FileRecord> records = new ArrayList<>();
         if (Files.exists(uploadDir)) {
@@ -276,6 +380,77 @@ public final class ScftBackendServer {
         return total;
     }
 
+
+    private static byte[] captureScreenJpeg(double scale, float quality) throws IOException, AWTException {
+        Rectangle bounds = screenBounds();
+        Robot robot = new Robot();
+        BufferedImage captured = robot.createScreenCapture(bounds);
+        BufferedImage image = toRgb(scaleImage(captured, scale));
+
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpg").next();
+        try (ImageOutputStream output = ImageIO.createImageOutputStream(bytes)) {
+            writer.setOutput(output);
+            ImageWriteParam params = writer.getDefaultWriteParam();
+            if (params.canWriteCompressed()) {
+                params.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                params.setCompressionQuality(quality);
+            }
+            writer.write(null, new IIOImage(image, null, null), params);
+        } finally {
+            writer.dispose();
+        }
+        return bytes.toByteArray();
+    }
+
+    private static Rectangle screenBounds() {
+        Rectangle bounds = new Rectangle();
+        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
+        for (GraphicsDevice device : devices) {
+            bounds = bounds.union(device.getDefaultConfiguration().getBounds());
+        }
+        return bounds;
+    }
+
+    private static BufferedImage scaleImage(BufferedImage source, double scale) {
+        if (scale >= 0.99) {
+            return source;
+        }
+
+        int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
+        int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
+        Image scaled = source.getScaledInstance(width, height, Image.SCALE_SMOOTH);
+        BufferedImage target = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = target.createGraphics();
+        graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        graphics.drawImage(scaled, 0, 0, null);
+        graphics.dispose();
+        return target;
+    }
+
+    private static BufferedImage toRgb(BufferedImage source) {
+        if (source.getType() == BufferedImage.TYPE_INT_RGB) {
+            return source;
+        }
+
+        BufferedImage target = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = target.createGraphics();
+        graphics.drawImage(source, 0, 0, null);
+        graphics.dispose();
+        return target;
+    }
+
+    private static double clampDouble(String raw, double min, double max, double fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            double value = Double.parseDouble(raw);
+            return Math.max(min, Math.min(max, value));
+        } catch (NumberFormatException error) {
+            return fallback;
+        }
+    }
     private static void validateContentLength(HttpExchange exchange) {
         String value = getHeader(exchange, "Content-Length");
         if (value == null || value.isBlank()) {
@@ -363,6 +538,16 @@ public final class ScftBackendServer {
         }
     }
 
+
+    private static void sendHtml(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(bytes);
+        }
+    }
     private static String getOrCreateDeviceId(Path storageRoot) throws IOException {
         Files.createDirectories(storageRoot);
         Path deviceFile = storageRoot.resolve("device-id.txt");

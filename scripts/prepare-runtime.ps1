@@ -72,7 +72,7 @@ New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 
 $jlink = Find-Jlink
 & $jlink `
-    --add-modules java.base,jdk.httpserver `
+    --add-modules java.base,java.desktop,jdk.httpserver `
     --strip-debug `
     --no-header-files `
     --no-man-pages `

@@ -204,7 +204,7 @@ async function startPreview() {
         return;
     }
 
-    const resolution = elements.resolutionSelect ? elements.resolutionSelect.value : "1280x720";
+    const resolution = elements.resolutionSelect ? elements.resolutionSelect.value : "720x1280";
     const bitrate = elements.bitrateSelect ? elements.bitrateSelect.value : "4000000";
     const adbCommand = state.adbPath || "adb";
 

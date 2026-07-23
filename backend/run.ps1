@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 $java = if ($JavaExe) { Get-Item -LiteralPath $JavaExe -ErrorAction SilentlyContinue } else { Get-Command java -ErrorAction SilentlyContinue }
 $javac = Get-Command javac -ErrorAction SilentlyContinue
-$sourceFile = Join-Path $PSScriptRoot "src/main/java/com/scft/backend/ScftBackendServer.java"
+$sourceFile = "backend/src/main/java/com/scft/backend/ScftBackendServer.java"
 $classFile = Join-Path $OutDir "com/scft/backend/ScftBackendServer.class"
 
 if (-not $javac -or -not $java) {

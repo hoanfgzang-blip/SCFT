@@ -1,0 +1,82 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./Share/global.css">
+    <link rel="stylesheet" href="./page/PC_Screen/PCScreen.css">
+    <title>SCFT - PC Screen Share</title>
+</head>
+<body>
+    <div class="app-layout">
+        <aside id="sidebar-container" class="roSidebar"></aside>
+        <div class="right-content">
+            <header id="header-container" class="roHeader"></header>
+            <main class="main-content pc-screen-page">
+                <section class="pc-toolbar">
+                    <div>
+                        <h1>PC Screen Share</h1>
+                        <p id="screen_status_text">Checking backend...</p>
+                    </div>
+                    <div class="pc-toolbar-actions">
+                        <button id="refresh_btn" class="secondary-btn" type="button">Refresh</button>
+                        <button id="open_viewer_btn" class="primary-btn" type="button" disabled>Open Viewer</button>
+                    </div>
+                </section>
+
+                <section class="pc-grid">
+                    <div class="pc-panel preview-panel">
+                        <div class="panel-heading">
+                            <h2>Desktop Preview</h2>
+                            <span id="frame_status_text">Idle</span>
+                        </div>
+                        <div class="desktop-preview">
+                            <img id="desktop_preview_img" alt="Desktop screen preview">
+                            <div id="empty_preview" class="empty-preview">Backend screen capture is not ready.</div>
+                        </div>
+                    </div>
+
+                    <div class="pc-panel device-panel">
+                        <div class="panel-heading">
+                            <h2>Phone Viewer</h2>
+                            <span id="screen_status_badge" class="status-badge offline">Offline</span>
+                        </div>
+
+                        <div class="link-list">
+                            <div>
+                                <span>USB ADB URL</span>
+                                <strong id="usb_url_text">-</strong>
+                                <button id="copy_usb_btn" class="link-btn" type="button" disabled>Copy</button>
+                            </div>
+                            <div>
+                                <span>LAN URL</span>
+                                <strong id="lan_url_text">-</strong>
+                                <button id="copy_lan_btn" class="link-btn" type="button" disabled>Copy</button>
+                            </div>
+                            <div>
+                                <span>Displays</span>
+                                <strong id="display_count_text">-</strong>
+                            </div>
+                        </div>
+
+                        <div class="guide-box">
+                            <strong>USB mode</strong>
+                            <span>Plug the phone by data cable, enable USB debugging, allow the prompt, then open the USB URL on the phone browser.</span>
+                        </div>
+
+                        <div class="guide-box">
+                            <strong>LAN mode</strong>
+                            <span>Connect phone and PC to the same network, then open the LAN URL on the phone browser.</span>
+                        </div>
+
+                        <p id="screen_message" class="status-message"></p>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script src="./Share/LoadComponent.js"></script>
+    <script src="./page/PC_Screen/PCScreen.js"></script>
+</body>
+</html>
