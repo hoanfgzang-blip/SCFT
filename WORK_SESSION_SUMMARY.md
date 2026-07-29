@@ -60,3 +60,11 @@ Last updated: 2026-07-30 01:18:17
 - Tested default 2K on real device `5f595062` through ADB reverse: after startup it held mostly 51-57 FPS with RTT around 3-10ms.
 - Tried a more aggressive latest-frame-only decoder drain plus 2K 16M bitrate; it reduced FPS to about 40-48 and increased drops, so that drain strategy was reverted.
 - Current evidence still does not prove true end-to-end latency of 5-10ms; it proves the USB/HTTP RTT is usually within that range and the remaining perceived delay is outside the transport layer.
+
+## 2026-07-30 - Backend 2K encoder check
+- Measured backend 2K stream locally with FFmpeg for 10 seconds: backend produced 600 frames at 2560x1440, proving backend/USB is not the main FPS bottleneck.
+- Tested forcing `h264_mf -hw_encoding 1`; it failed with RGB input unless converted to nv12, so hard-forcing hardware encode is not safe for every machine.
+- Updated backend H.264 filter chain to append `format=nv12` for `h264_mf`, matching the encoder supported pixel format before MediaFoundation receives frames.
+- Backend compile passed after the filter update.
+- Real Android 2K test after `format=nv12`: still around 50-57 FPS after startup, RTT about 5-14ms. This is safe but not a decisive FPS/latency breakthrough.
+- Current bottleneck remains Android decode/render timing or Windows/MediaFoundation buffering, not ADB transfer.

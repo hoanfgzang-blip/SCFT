@@ -86,8 +86,15 @@ final class H264ScreenStreamer implements AutoCloseable {
 
     private void appendEncoderOutput(List<String> command) {
         String encoder = System.getenv().getOrDefault("SCFT_H264_ENCODER", "h264_mf");
+        List<String> filters = new ArrayList<>();
         if (targetWidth > 0 && targetHeight > 0) {
-            command.addAll(List.of("-vf", "scale=" + targetWidth + ":" + targetHeight + ":flags=fast_bilinear"));
+            filters.add("scale=" + targetWidth + ":" + targetHeight + ":flags=fast_bilinear");
+        }
+        if ("h264_mf".equalsIgnoreCase(encoder)) {
+            filters.add("format=nv12");
+        }
+        if (!filters.isEmpty()) {
+            command.addAll(List.of("-vf", String.join(",", filters)));
         }
         command.addAll(List.of("-an", "-c:v", encoder));
         if ("h264_nvenc".equalsIgnoreCase(encoder)) {
