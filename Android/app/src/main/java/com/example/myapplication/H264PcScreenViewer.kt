@@ -41,6 +41,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
@@ -285,24 +286,43 @@ private class LowLatencyH264Player(
             http.connect()
             if (http.responseCode !in 200..299) throw IllegalStateException("Stream HTTP ${http.responseCode}")
 
-            http.inputStream.use { input ->
-                val readBuffer = ByteArray(READ_BUFFER_BYTES)
-                val nalBuffer = NalBuffer()
-                var ptsUs = 0L
-                var bytesThisSecond = 0L
-                var renderedThisSecond = 0
-                var queuedThisSecond = 0
-                var droppedThisSecond = 0
-                var lastStatsAt = SystemClock.elapsedRealtime()
-                while (running.get()) {
-                    drainLatest(decoder).also {
-                        renderedThisSecond += it.renderedFrames
-                        droppedThisSecond += it.droppedFrames
+            val chunks = EncodedChunkQueue(MAX_PENDING_H264_BYTES)
+            val readerDone = AtomicBoolean(false)
+            val reader = Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
+                try {
+                    http.inputStream.use { input ->
+                        val readBuffer = ByteArray(READ_BUFFER_BYTES)
+                        while (running.get()) {
+                            val read = input.read(readBuffer)
+                            if (read <= 0) break
+                            chunks.push(readBuffer.copyOf(read))
+                        }
                     }
-                    val read = input.read(readBuffer)
-                    if (read <= 0) break
-                    bytesThisSecond += read
-                    nalBuffer.append(readBuffer, read)
+                } catch (_: Exception) {
+                } finally {
+                    readerDone.set(true)
+                    chunks.close()
+                }
+            }, "scft-h264-reader")
+            reader.start()
+
+            val nalBuffer = NalBuffer()
+            var ptsUs = 0L
+            var bytesThisSecond = 0L
+            var renderedThisSecond = 0
+            var queuedThisSecond = 0
+            var droppedThisSecond = 0
+            var lastStatsAt = SystemClock.elapsedRealtime()
+            while (running.get() && (!readerDone.get() || chunks.hasPending() || nalBuffer.size > 0)) {
+                drainLatest(decoder).also {
+                    renderedThisSecond += it.renderedFrames
+                    droppedThisSecond += it.droppedFrames
+                }
+                val chunk = chunks.pop(4)
+                if (chunk != null) {
+                    bytesThisSecond += chunk.size.toLong()
+                    nalBuffer.append(chunk, chunk.size)
                     if (nalBuffer.size > MAX_PENDING_H264_BYTES) {
                         droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(MAX_PENDING_H264_BYTES / 3)
                     }
@@ -314,22 +334,23 @@ private class LowLatencyH264Player(
                     if (nalBuffer.size > MAX_PENDING_H264_BYTES) {
                         droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(MAX_PENDING_H264_BYTES / 3)
                     }
+                }
 
-                    val now = SystemClock.elapsedRealtime()
-                    if (now - lastStatsAt >= 1000L) {
-                        val kbps = bytesThisSecond / 1024L
-                        val net = if (latestNetworkRttMs >= 0L) "${latestNetworkRttMs} ms" else "-"
-                        val stats = "${preset.label} ${preset.width}x${preset.height} | ${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s | net ${net}"
-                        Log.d(PC_SCREEN_LOG_TAG, stats)
-                        post { onStats(stats) }
-                        bytesThisSecond = 0L
-                        renderedThisSecond = 0
-                        queuedThisSecond = 0
-                        droppedThisSecond = 0
-                        lastStatsAt = now
-                    }
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastStatsAt >= 1000L) {
+                    val kbps = bytesThisSecond / 1024L
+                    val net = if (latestNetworkRttMs >= 0L) "${latestNetworkRttMs} ms" else "-"
+                    val stats = "${preset.label} ${preset.width}x${preset.height} | ${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s | net ${net}"
+                    Log.d(PC_SCREEN_LOG_TAG, stats)
+                    post { onStats(stats) }
+                    bytesThisSecond = 0L
+                    renderedThisSecond = 0
+                    queuedThisSecond = 0
+                    droppedThisSecond = 0
+                    lastStatsAt = now
                 }
             }
+
         } catch (_: Exception) {
             failed = true
             if (running.get()) post(onError)
@@ -500,6 +521,53 @@ private class LowLatencyH264Player(
     private data class QueueResult(val renderedFrames: Int, val queuedFrames: Int, val droppedFrames: Int)
 
     private data class DrainResult(val renderedFrames: Int, val droppedFrames: Int)
+
+    private class EncodedChunkQueue(private val maxBytes: Int) {
+        private val lock = Object()
+        private val chunks = ArrayDeque<ByteArray>()
+        private var bytes = 0
+        private var closed = false
+
+        fun push(chunk: ByteArray) {
+            synchronized(lock) {
+                if (closed) return
+                chunks.addLast(chunk)
+                bytes += chunk.size
+                while (bytes > maxBytes && chunks.size > 1) {
+                    bytes -= chunks.removeFirst().size
+                }
+                lock.notifyAll()
+            }
+        }
+
+        fun pop(timeoutMs: Long): ByteArray? {
+            synchronized(lock) {
+                if (chunks.isEmpty() && !closed) {
+                    try {
+                        lock.wait(timeoutMs)
+                    } catch (_: InterruptedException) {
+                    }
+                }
+                if (chunks.isEmpty()) return null
+                val chunk = chunks.removeFirst()
+                bytes -= chunk.size
+                return chunk
+            }
+        }
+
+        fun hasPending(): Boolean {
+            synchronized(lock) {
+                return chunks.isNotEmpty()
+            }
+        }
+
+        fun close() {
+            synchronized(lock) {
+                closed = true
+                lock.notifyAll()
+            }
+        }
+    }
 
     private class NalBuffer(initialCapacity: Int = 512 * 1024) {
         var data = ByteArray(initialCapacity)

@@ -74,3 +74,10 @@ Last updated: 2026-07-30 01:18:17
 - Android build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
 - Real device `5f595062` default 2K test after the change: startup second 44 FPS, then mostly 51-59 FPS with RTT about 4-10ms.
 - This is a low-risk decoder configuration improvement, but it still does not prove true end-to-end 5-10ms latency.
+
+## 2026-07-30 - Android split reader and decoder
+- Split Android H.264 receiving into a dedicated HTTP reader thread plus a capped encoded chunk queue, while the main stream thread focuses on MediaCodec feed/drain.
+- Queue is capped by `MAX_PENDING_H264_BYTES` and drops oldest encoded chunks when it grows too large, keeping decoder closer to the newest data.
+- Android build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
+- Real device `5f595062` 2K test after selecting preset 2K: 56-62 FPS, 0 drops across the sampled log, RTT usually 4-12ms with one 85ms spike.
+- This is the strongest improvement so far for the 2K/60 FPS target. End-to-end 5-10ms still is not fully proven, but transport RTT and render FPS are now much closer to target.
