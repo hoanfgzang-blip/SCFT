@@ -54,3 +54,9 @@ Last updated: 2026-07-30 01:18:17
 - Android debug build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
 - Real device `5f595062` test after tuning: mostly 57-62 FPS, low drops, ADB RTT usually 4-13ms; one initial second at 45 FPS during startup.
 - Important finding: transfer/network delay is low; perceived >100ms delay is more likely encode/decode/display buffering or Windows capture/encoder behavior than ADB transport.
+## 2026-07-30 - Default 2K Android PC screen
+- Changed Android PC Screen default preset to `2K 2560x1440` so the default viewer no longer starts at 1080x920.
+- Added preset and resolution to the Android stream overlay/log, for example `2K 2560x1440 | 54 FPS | ... | net 6 ms`.
+- Tested default 2K on real device `5f595062` through ADB reverse: after startup it held mostly 51-57 FPS with RTT around 3-10ms.
+- Tried a more aggressive latest-frame-only decoder drain plus 2K 16M bitrate; it reduced FPS to about 40-48 and increased drops, so that drain strategy was reverted.
+- Current evidence still does not prove true end-to-end latency of 5-10ms; it proves the USB/HTTP RTT is usually within that range and the remaining perceived delay is outside the transport layer.

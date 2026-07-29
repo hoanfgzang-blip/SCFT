@@ -52,8 +52,8 @@ private const val MAX_PENDING_H264_BYTES = 2 * 1024 * 1024
 private const val MAX_INPUT_NALS_PER_CYCLE = 32
 
 private val PC_SCREEN_PRESETS = listOf(
-    PcScreenPreset("Nhanh", 1080, 920, "6M"),
     PcScreenPreset("2K", 2560, 1440, "24M"),
+    PcScreenPreset("Nhanh", 1920, 1080, "12M"),
     PcScreenPreset("720p", 1280, 720, "8M")
 )
 
@@ -315,7 +315,7 @@ private class LowLatencyH264Player(
                     if (now - lastStatsAt >= 1000L) {
                         val kbps = bytesThisSecond / 1024L
                         val net = if (latestNetworkRttMs >= 0L) "${latestNetworkRttMs} ms" else "-"
-                        val stats = "${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s | net ${net}"
+                        val stats = "${preset.label} ${preset.width}x${preset.height} | ${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s | net ${net}"
                         Log.d(PC_SCREEN_LOG_TAG, stats)
                         post { onStats(stats) }
                         bytesThisSecond = 0L
