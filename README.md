@@ -158,4 +158,4 @@ Dien thoai co the mo:
 http://127.0.0.1:7878/api/screen/view
 ```
 
-Neu dung USB ADB reverse, hoac mo LAN URL hien trong app neu dien thoai va PC cung mang. Tinh nang hien tai la mirror/preview man hinh PC len dien thoai. De lam second monitor dung nghia extend display cho Windows/macOS/Linux can virtual display driver rieng, khong the chi lam bang web page/backend Java.
+Neu dung USB ADB reverse, hoac mo LAN URL hien trong app neu dien thoai va PC cung mang. Tinh nang hien tai co the mirror/preview man hinh PC len dien thoai. SCFT da co source Windows Indirect Display Driver tai `windows_driver/SCFTVirtualDisplay/` de tao mot man hinh ao 1920x1080 60 Hz. Khi driver duoc build, ky va cai dat, Windows se xem no la monitor thu hai; chon monitor nay trong PC Screen Share de truyen sang Android qua USB ADB. Build/cai dat chua the thuc hien tren may hien tai vi chua co Visual Studio C++ Build Tools va Windows Driver Kit. Huong dan nam trong `windows_driver/SCFTVirtualDisplay/README.md`.

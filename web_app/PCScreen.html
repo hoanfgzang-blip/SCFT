@@ -1,11 +1,11 @@
-﻿<!DOCTYPE html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="./Share/global.css">
     <link rel="stylesheet" href="./page/PC_Screen/PCScreen.css">
-    <title>SCFT - PC Screen Share</title>
+    <title>SCFT - Chiếu màn hình PC</title>
 </head>
 <body>
     <div class="app-layout">
@@ -15,58 +15,65 @@
             <main class="main-content pc-screen-page">
                 <section class="pc-toolbar">
                     <div>
-                        <h1>PC Screen Share</h1>
-                        <p id="screen_status_text">Checking backend...</p>
+                        <h1>Chiếu màn hình PC</h1>
+                        <p id="screen_status_text">Đang kiểm tra máy chủ...</p>
                     </div>
                     <div class="pc-toolbar-actions">
-                        <button id="refresh_btn" class="secondary-btn" type="button">Refresh</button>
-                        <button id="open_viewer_btn" class="primary-btn" type="button" disabled>Open Viewer</button>
+                        <button id="refresh_btn" class="secondary-btn" type="button">Cập nhật</button>
+                        <button id="open_viewer_btn" class="primary-btn" type="button" disabled>Mở màn hình PC</button>
+                        <button id="stop_viewer_btn" class="danger-btn" type="button" hidden>Dừng chiếu</button>
                     </div>
                 </section>
 
                 <section class="pc-grid">
                     <div class="pc-panel preview-panel">
                         <div class="panel-heading">
-                            <h2>Desktop Preview</h2>
-                            <span id="frame_status_text">Idle</span>
+                            <h2>Xem trước màn hình PC</h2>
+                            <span id="frame_status_text">Chờ</span>
                         </div>
                         <div class="desktop-preview">
-                            <img id="desktop_preview_img" alt="Desktop screen preview">
-                            <div id="empty_preview" class="empty-preview">Backend screen capture is not ready.</div>
+                            <img id="desktop_preview_img" alt="Xem trước màn hình PC">
+                            <div id="empty_preview" class="empty-preview">Dịch vụ chụp màn hình PC chưa sẵn sàng.</div>
                         </div>
                     </div>
 
                     <div class="pc-panel device-panel">
                         <div class="panel-heading">
-                            <h2>Phone Viewer</h2>
-                            <span id="screen_status_badge" class="status-badge offline">Offline</span>
+                            <h2>Điện thoại nhận màn hình</h2>
+                            <span id="screen_status_badge" class="status-badge offline">Ngoại tuyến</span>
                         </div>
 
                         <div class="link-list">
                             <div>
-                                <span>USB ADB URL</span>
+                                <span>Kết nối USB ADB</span>
                                 <strong id="usb_url_text">-</strong>
-                                <button id="copy_usb_btn" class="link-btn" type="button" disabled>Copy</button>
+                                <button id="copy_usb_btn" class="link-btn" type="button" disabled>Sao chép</button>
                             </div>
                             <div>
-                                <span>LAN URL</span>
+                                <span>Kết nối mạng LAN</span>
                                 <strong id="lan_url_text">-</strong>
-                                <button id="copy_lan_btn" class="link-btn" type="button" disabled>Copy</button>
+                                <button id="copy_lan_btn" class="link-btn" type="button" disabled>Sao chép</button>
                             </div>
                             <div>
-                                <span>Displays</span>
+                                <span>Màn hình nguồn</span>
+                                <select id="display_select" disabled>
+                                    <option value="0">Màn hình 1</option>
+                                </select>
+                            </div>
+                            <div>
+                                <span>Số màn hình</span>
                                 <strong id="display_count_text">-</strong>
                             </div>
                         </div>
 
                         <div class="guide-box">
-                            <strong>USB mode</strong>
-                            <span>Plug the phone by data cable, enable USB debugging, allow the prompt, then open the USB URL on the phone browser.</span>
+                            <strong>Chế độ USB</strong>
+                            <span>Kết nối điện thoại bằng cáp dữ liệu, bật gỡ lỗi USB và chấp nhận thông báo cấp quyền. Sau đó nhấn Mở trên điện thoại.</span>
                         </div>
 
                         <div class="guide-box">
-                            <strong>LAN mode</strong>
-                            <span>Connect phone and PC to the same network, then open the LAN URL on the phone browser.</span>
+                            <strong>Chế độ mạng LAN</strong>
+                            <span>Connect phone and PC to the same network, then open the Kết nối mạng LAN on the phone browser.</span>
                         </div>
 
                         <p id="screen_message" class="status-message"></p>
