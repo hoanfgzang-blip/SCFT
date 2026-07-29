@@ -1,0 +1,7 @@
+SCFT Third-Party Notices
+
+This application includes FFmpeg LGPL shared binaries from BtbN/FFmpeg-Builds.
+FFmpeg is licensed under the GNU Lesser General Public License version 3 or later.
+Source and build information: https://github.com/BtbN/FFmpeg-Builds
+FFmpeg source: https://ffmpeg.org/download.html
+The bundled FFmpeg license is available at resources/ffmpeg/LICENSE.txt after installation.

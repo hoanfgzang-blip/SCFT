@@ -40,11 +40,11 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-private const val PC_SCREEN_FRAME_URL = "http://127.0.0.1:7878/api/screen/frame?scale=0.65&quality=0.65"
+private const val PC_SCREEN_FRAME_URL = "http://127.0.0.1:7878/api/screen/frame?scale=1.0&quality=0.78"
 private const val FRAME_INTERVAL_MS = 45L
 
 @Composable
-fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, onBack: () -> Unit) {
+fun JpegPcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, onBack: () -> Unit) {
     val view = LocalView.current
     var running by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
@@ -127,24 +127,20 @@ fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, o
 }
 
 private fun loadPcFrame(displayIndex: Int): Bitmap {
-    val connection = URL("$PC_SCREEN_FRAME_URL&display=$displayIndex&t=${System.currentTimeMillis()}").openConnection() as HttpURLConnection
-
-    try {
-        connection.connectTimeout = 5000
-        connection.readTimeout = 1500
-        connection.useCaches = false
-        connection.setRequestProperty("Connection", "keep-alive")
-        if (connection.responseCode !in 200..299) {
-            throw IOException("HTTP ${connection.responseCode}")
-        }
-        return connection.inputStream.use { input ->
-            BitmapFactory.decodeStream(
-                input,
-                null,
-                BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
-            ) ?: throw IOException("Khung hình trống.")
-        }
-    } finally {
-        connection.disconnect()
+    val connection = URL("$PC_SCREEN_FRAME_URL&display=$displayIndex").openConnection() as HttpURLConnection
+    connection.connectTimeout = 5000
+    connection.readTimeout = 1500
+    connection.useCaches = false
+    connection.setRequestProperty("Connection", "keep-alive")
+    connection.setRequestProperty("Accept", "image/jpeg")
+    if (connection.responseCode !in 200..299) {
+        throw IOException("HTTP ${connection.responseCode}")
+    }
+    return connection.inputStream.use { input ->
+        BitmapFactory.decodeStream(
+            input,
+            null,
+            BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+        ) ?: throw IOException("Empty frame")
     }
 }

@@ -36,6 +36,7 @@
     "files": [
       "main.js",
       "package.json",
+      "THIRD_PARTY_NOTICES.txt",
       "web_app/**/*",
       "backend/run.ps1",
       "backend/src/**/*",
@@ -53,6 +54,12 @@
       {
         "from": "build-resources/virtual-display",
         "to": "virtual-display",
+        "filter": ["**/*"]
+      }
+    ,
+      {
+        "from": "build-resources/ffmpeg",
+        "to": "ffmpeg",
         "filter": ["**/*"]
       }
     ],

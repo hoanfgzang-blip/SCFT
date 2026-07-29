@@ -1,0 +1,8 @@
+**/Debug/
+**/Release/
+**/x64/
+**/ARM64/
+*.cat
+*.dll
+*.pdb
+*.inf2cat.xml

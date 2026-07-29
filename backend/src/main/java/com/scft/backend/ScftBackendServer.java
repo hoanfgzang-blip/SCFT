@@ -196,6 +196,16 @@ public final class ScftBackendServer {
             return;
         }
 
+        if ("/api/screen/stream".equals(path)) {
+            handleScreenStream(exchange);
+            return;
+        }
+
+        if ("/api/screen/latency".equals(path)) {
+            handleScreenLatency(exchange);
+            return;
+        }
+
         if ("/api/screen/view".equals(path)) {
             handleScreenView(exchange);
             return;
@@ -242,6 +252,7 @@ public final class ScftBackendServer {
                 + "\"screens\":" + screenList + ","
                 + "\"viewUrl\":\"/api/screen/view\","
                 + "\"frameUrl\":\"/api/screen/frame\","
+                + "\"streamUrl\":\"/api/screen/stream\","
                 + "\"error\":\"" + json(error) + "\""
                 + "}";
         sendJson(exchange, 200, body);
@@ -272,6 +283,32 @@ public final class ScftBackendServer {
         }
     }
 
+    private void handleScreenStream(HttpExchange exchange) throws IOException, AWTException {
+        Map<String, String> params = queryParams(exchange.getRequestURI());
+        int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
+        int fps = clampInt(params.get("fps"), 15, 60, 30);
+        String format = "h264".equalsIgnoreCase(params.get("format")) ? "h264" : "mpegts";
+        String bitrate = params.get("bitrate");
+        int targetWidth = clampInt(params.get("width"), 0, 3840, 0);
+        int targetHeight = clampInt(params.get("height"), 0, 2160, 0);
+        H264ScreenStreamer streamer = new H264ScreenStreamer(display, fps, format, bitrate, targetWidth, targetHeight);
+        Headers headers = exchange.getResponseHeaders();
+        headers.set("Content-Type", "h264".equals(format) ? "video/h264" : "video/mp2t");
+        headers.set("Cache-Control", "no-store");
+        exchange.sendResponseHeaders(200, 0);
+        try (OutputStream output = exchange.getResponseBody()) {
+            streamer.stream(output);
+        } finally {
+            streamer.close();
+        }
+    }
+
+    private void handleScreenLatency(HttpExchange exchange) throws IOException {
+        Headers headers = exchange.getResponseHeaders();
+        headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        headers.set("Pragma", "no-cache");
+        sendJson(exchange, 200, "{\"serverTimeMs\":" + System.currentTimeMillis() + "}");
+    }
     private void handleScreenView(HttpExchange exchange) throws IOException {
         String body = "<!doctype html>"
                 + "<html><head><meta charset=\"utf-8\">"
@@ -805,3 +842,4 @@ public final class ScftBackendServer {
         }
     }
 }
+

@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 $java = if ($JavaExe) { Get-Item -LiteralPath $JavaExe -ErrorAction SilentlyContinue } else { Get-Command java -ErrorAction SilentlyContinue }
 $javac = Get-Command javac -ErrorAction SilentlyContinue
-$sourceFile = "backend/src/main/java/com/scft/backend/ScftBackendServer.java"
+$sourceFiles = Get-ChildItem -Path "backend/src/main/java" -Recurse -Filter "*.java" | ForEach-Object { Join-Path "backend/src/main/java" $_.FullName.Substring((Resolve-Path "backend/src/main/java").Path.Length + 1) }
 $classFile = Join-Path $OutDir "com/scft/backend/ScftBackendServer.class"
 
 if (-not $javac -or -not $java) {
@@ -33,7 +33,7 @@ if (-not $java) {
 $needsCompile = (-not $SkipCompile) -and (-not (Test-Path $classFile))
 
 if ((-not $SkipCompile) -and (-not $needsCompile)) {
-    $needsCompile = (Get-Item $sourceFile).LastWriteTimeUtc -gt (Get-Item $classFile).LastWriteTimeUtc
+    $needsCompile = ($sourceFiles | ForEach-Object { (Get-Item $_).LastWriteTimeUtc } | Measure-Object -Maximum).Maximum -gt (Get-Item $classFile).LastWriteTimeUtc
 }
 
 if ($needsCompile) {
@@ -42,7 +42,7 @@ if ($needsCompile) {
     }
 
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-    & $javac -d $OutDir $sourceFile
+    & $javac -d $OutDir $sourceFiles
 }
 
 if ($CompileOnly) {
