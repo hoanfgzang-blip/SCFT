@@ -68,3 +68,9 @@ Last updated: 2026-07-30 01:18:17
 - Backend compile passed after the filter update.
 - Real Android 2K test after `format=nv12`: still around 50-57 FPS after startup, RTT about 5-14ms. This is safe but not a decisive FPS/latency breakthrough.
 - Current bottleneck remains Android decode/render timing or Windows/MediaFoundation buffering, not ADB transfer.
+
+## 2026-07-30 - Android MediaCodec runtime low latency
+- Added Android runtime `MediaCodec.PARAMETER_KEY_LOW_LATENCY` after decoder start, in addition to the existing `MediaFormat.KEY_LOW_LATENCY` configure flag.
+- Android build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
+- Real device `5f595062` default 2K test after the change: startup second 44 FPS, then mostly 51-59 FPS with RTT about 4-10ms.
+- This is a low-risk decoder configuration improvement, but it still does not prove true end-to-end 5-10ms latency.

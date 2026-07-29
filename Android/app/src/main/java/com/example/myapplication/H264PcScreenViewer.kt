@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
@@ -270,6 +271,9 @@ private class LowLatencyH264Player(
             if (Build.VERSION.SDK_INT >= 30) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             decoder.configure(format, surface, null, 0)
             decoder.start()
+            if (Build.VERSION.SDK_INT >= 30) {
+                decoder.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_LOW_LATENCY, 1) })
+            }
             post(onStarted)
 
             val http = URL(preset.streamUrl(displayIndex)).openConnection() as HttpURLConnection
