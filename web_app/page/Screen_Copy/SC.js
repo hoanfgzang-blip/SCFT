@@ -2,12 +2,20 @@ const { execFile, spawn } = require("child_process");
 const path = require("path");
 const os = require("os");
 
+const RESOLUTION_MAP = {
+    "720p": "720x1280",
+    "1080p": "1080x1920",
+    "1440p": "1440x2560",
+    "4K": "2160x3840"
+};
+
 const state = {
     adbPath: null,
     running: false,
     adbProcess: null,
     decoder: null,
-    frameCount: 0
+    frameCount: 0,
+    currentOrientation: null
 };
 
 const elements = {};
@@ -15,6 +23,7 @@ const elements = {};
 document.addEventListener("DOMContentLoaded", () => {
     bindElements();
     bindEvents();
+    loadSettingsDisplay();
     refreshDevice();
 });
 
@@ -23,11 +32,14 @@ function bindElements() {
     elements.refreshButton = document.getElementById("refresh_device_btn");
     elements.startButton = document.getElementById("start_preview_btn");
     elements.stopButton = document.getElementById("stop_preview_btn");
+    elements.popoutButton = document.getElementById("popout_btn");
     elements.badge = document.getElementById("adb_status_badge");
     elements.deviceText = document.getElementById("adb_device_text");
     elements.adbPathText = document.getElementById("adb_path_text");
-    elements.resolutionSelect = document.getElementById("screen_resolution_select");
-    elements.bitrateSelect = document.getElementById("screen_bitrate_select");
+    elements.resolutionText = document.getElementById("sc_resolution_text");
+    elements.bitrateText = document.getElementById("sc_bitrate_text");
+    elements.fpsText = document.getElementById("sc_fps_text");
+    elements.orientationText = document.getElementById("sc_orientation_text");
     elements.message = document.getElementById("screen_message");
     elements.canvas = document.getElementById("screen_preview_canvas");
     elements.phoneShell = document.querySelector(".phone-shell");
@@ -39,20 +51,68 @@ function bindEvents() {
     elements.startButton.addEventListener("click", startPreview);
     elements.stopButton.addEventListener("click", stopPreview);
 
-    if (elements.resolutionSelect) {
-        elements.resolutionSelect.addEventListener("change", restartIfRunning);
-    }
-    if (elements.bitrateSelect) {
-        elements.bitrateSelect.addEventListener("change", restartIfRunning);
+    if (elements.popoutButton) {
+        elements.popoutButton.addEventListener("click", openPopout);
     }
 
     window.addEventListener("beforeunload", stopPreview);
+    window.addEventListener("storage", (e) => {
+        if (e.key && e.key.startsWith("SCFT_")) {
+            loadSettingsDisplay();
+        }
+    });
 }
 
-function restartIfRunning() {
-    if (!state.running) return;
-    stopPreview();
-    startPreview();
+function getStreamSettings() {
+    const resKey = localStorage.getItem("SCFT_Resolution") || "1080p";
+    const bitrateRaw = parseFloat(localStorage.getItem("SCFT_Bitrate") || "4");
+    const fps = localStorage.getItem("SCFT_FPS") || "60";
+
+    return {
+        resolutionLabel: resKey,
+        resolution: RESOLUTION_MAP[resKey] || "1080x1920",
+        bitrateMbps: bitrateRaw,
+        bitrate: String(Math.round(bitrateRaw * 1000000)),
+        fps: fps
+    };
+}
+
+function loadSettingsDisplay() {
+    const settings = getStreamSettings();
+    if (elements.resolutionText) elements.resolutionText.textContent = settings.resolutionLabel + " (" + settings.resolution + ")";
+    if (elements.bitrateText) elements.bitrateText.textContent = settings.bitrateMbps + " Mbps";
+    if (elements.fpsText) elements.fpsText.textContent = settings.fps + " FPS";
+}
+
+function updateOrientation(width, height) {
+    const isLandscape = width > height;
+    const newOrientation = isLandscape ? "landscape" : "portrait";
+
+    if (state.currentOrientation === newOrientation) return;
+
+    state.currentOrientation = newOrientation;
+
+    if (elements.phoneShell) {
+        elements.phoneShell.classList.remove("portrait", "landscape");
+        elements.phoneShell.classList.add(newOrientation);
+    }
+
+    if (elements.orientationText) {
+        elements.orientationText.textContent = isLandscape ? "Landscape ↔" : "Portrait ↕";
+    }
+}
+
+function openPopout() {
+    try {
+        const { ipcRenderer } = require("electron");
+        ipcRenderer.send("open-popout-window", {
+            adbPath: state.adbPath || ""
+        });
+        stopPreview();
+        setMessage("Stream moved to floating window.", "success");
+    } catch (err) {
+        setMessage("Cannot open floating window: " + err.message, "error");
+    }
 }
 
 function getAdbCandidates() {
@@ -188,15 +248,19 @@ async function startPreview() {
 
     state.running = true;
     state.frameCount = 0;
+    state.currentOrientation = null;
     elements.startButton.disabled = true;
     elements.stopButton.disabled = false;
     elements.refreshButton.disabled = true;
+    if (elements.popoutButton) elements.popoutButton.disabled = false;
     setMessage("Streaming screen in real-time...", "success");
 
     try {
         state.decoder = new H264StreamDecoder(elements.canvas, (stats) => {
             elements.phoneShell.classList.add("has-frame");
-            elements.frameInfo.textContent = `${stats.frameCount} frames | ${stats.fps} FPS (${stats.width}x${stats.height})`;
+            elements.frameInfo.textContent = `${stats.frameCount} frames | ${stats.fps} FPS (${stats.width}×${stats.height})`;
+
+            updateOrientation(stats.width, stats.height);
         });
     } catch (err) {
         setMessage(err.message, "error");
@@ -204,16 +268,16 @@ async function startPreview() {
         return;
     }
 
-    const resolution = elements.resolutionSelect ? elements.resolutionSelect.value : "720x1280";
-    const bitrate = elements.bitrateSelect ? elements.bitrateSelect.value : "4000000";
+    const settings = getStreamSettings();
+    loadSettingsDisplay();
     const adbCommand = state.adbPath || "adb";
 
     const spawnArgs = [
         "exec-out",
         "screenrecord",
         "--output-format=h264",
-        "--size", resolution,
-        "--bit-rate", bitrate,
+        "--size", settings.resolution,
+        "--bit-rate", settings.bitrate,
         "--time-limit", "1800",
         "-"
     ];
@@ -266,7 +330,6 @@ function stopPreview() {
     if (elements.startButton) elements.startButton.disabled = false;
     if (elements.stopButton) elements.stopButton.disabled = true;
     if (elements.refreshButton) elements.refreshButton.disabled = false;
-    if (elements.phoneShell) elements.phoneShell.classList.remove("has-frame");
 }
 
 function setStatus(text, online) {

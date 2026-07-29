@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -6,6 +6,7 @@ const os = require('os');
 
 let backendProcess = null;
 let runtimePaths = null;
+let popoutWindow = null;
 
 function getBundledResourcePath(name) {
     if (app.isPackaged) {
@@ -178,11 +179,45 @@ function createWindow() {
     win.loadFile('web_app/index.html');
 }
 
+function createPopoutWindow(adbPath) {
+    if (popoutWindow && !popoutWindow.isDestroyed()) {
+        popoutWindow.focus();
+        return;
+    }
+
+    popoutWindow = new BrowserWindow({
+        width: 480,
+        height: 854,
+        minWidth: 240,
+        minHeight: 320,
+        alwaysOnTop: true,
+        title: 'SCFT - Screen Preview',
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        }
+    });
+
+    const queryParams = adbPath ? `?adbPath=${encodeURIComponent(adbPath)}` : '';
+    popoutWindow.loadFile('web_app/SC_Popout.html', {
+        search: queryParams
+    });
+
+    popoutWindow.on('closed', () => {
+        popoutWindow = null;
+    });
+}
+
 app.whenReady().then(() => {
     prepareBundledRuntime();
     startBackend();
     startUsbTunnel();
     createWindow();
+
+    ipcMain.on('open-popout-window', (event, data) => {
+        const adbPath = (data && data.adbPath) || (process.env.SCFT_ADB_PATH || '');
+        createPopoutWindow(adbPath);
+    });
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {

@@ -26,6 +26,7 @@
                         <button id="refresh_device_btn" class="secondary-btn" type="button">Refresh</button>
                         <button id="start_preview_btn" class="primary-btn" type="button">Start</button>
                         <button id="stop_preview_btn" class="secondary-btn" type="button" disabled>Stop</button>
+                        <button id="popout_btn" class="secondary-btn" type="button" title="Open in floating window">⧉ Pop Out</button>
                     </div>
                 </section>
 
@@ -36,7 +37,7 @@
                             <span id="frame_info_text">0 frames</span>
                         </div>
 
-                        <div class="phone-shell">
+                        <div class="phone-shell portrait">
                             <canvas id="screen_preview_canvas"></canvas>
                             <div id="empty_preview" class="empty-preview">
                                 Connect an Android device with USB debugging enabled.
@@ -61,19 +62,19 @@
                             </div>
                             <div>
                                 <span>Resolution</span>
-                                <select id="screen_resolution_select">
-                                    <option value="720x1280" selected>720p (720x1280 - Mượt)</option>
-                                    <option value="1080x1920">1080p (1080x1920 - Nét)</option>
-                                    <option value="480x854">480p (480x854 - Trễ thấp)</option>
-                                </select>
+                                <strong id="sc_resolution_text">-</strong>
                             </div>
                             <div>
                                 <span>Bitrate</span>
-                                <select id="screen_bitrate_select">
-                                    <option value="2000000">2 Mbps</option>
-                                    <option value="4000000" selected>4 Mbps (Khuyên dùng)</option>
-                                    <option value="8000000">8 Mbps (Chất lượng cao)</option>
-                                </select>
+                                <strong id="sc_bitrate_text">-</strong>
+                            </div>
+                            <div>
+                                <span>FPS</span>
+                                <strong id="sc_fps_text">-</strong>
+                            </div>
+                            <div>
+                                <span>Orientation</span>
+                                <strong id="sc_orientation_text">-</strong>
                             </div>
                             <div>
                                 <span>Transport</span>

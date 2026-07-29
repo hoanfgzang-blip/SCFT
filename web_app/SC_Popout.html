@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./page/Screen_Copy/SC_Popout.css">
+    <title>SCFT - Screen Preview</title>
+</head>
+<body>
+    <div id="popout_container" class="popout-container">
+        <canvas id="popout_canvas"></canvas>
+        <div id="popout_overlay" class="popout-overlay">
+            <span id="popout_stats" class="popout-stats">Connecting...</span>
+        </div>
+        <div id="popout_empty" class="popout-empty">
+            <p>Waiting for stream...</p>
+        </div>
+    </div>
+    <script src="./page/Screen_Copy/h264_stream_decoder.js"></script>
+    <script src="./page/Screen_Copy/SC_Popout.js"></script>
+</body>
+</html>
