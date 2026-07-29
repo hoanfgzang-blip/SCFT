@@ -81,3 +81,12 @@ Last updated: 2026-07-30 01:18:17
 - Android build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
 - Real device `5f595062` 2K test after selecting preset 2K: 56-62 FPS, 0 drops across the sampled log, RTT usually 4-12ms with one 85ms spike.
 - This is the strongest improvement so far for the 2K/60 FPS target. End-to-end 5-10ms still is not fully proven, but transport RTT and render FPS are now much closer to target.
+
+## 2026-07-30 - Fast mode tuned for lower stutter
+- User reported mode `Nhanh` still stuttered too much and accepted lowering quality settings to prioritize faster image transfer.
+- Changed Android `Nhanh` preset from 1920x1080/12M to 1600x900/6M.
+- Changed 720p preset bitrate from 8M to 4M for an even lighter fallback.
+- Added per-preset encoded queue limits: 2K keeps 2MB, `Nhanh` uses 768KB, 720p uses 512KB.
+- Kept the `buf X KB` overlay/log metric so internal backlog can be seen directly.
+- Android build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
+- Real device `5f595062` test for `Nhanh 1600x900`: after startup it held mostly 59-63 FPS, 0 drops, backlog about 110-116KB, RTT about 5-10ms.

@@ -50,16 +50,16 @@ private const val PC_SCREEN_LATENCY_URL = "http://127.0.0.1:7878/api/screen/late
 private const val FRAME_INTERVAL_US = 16_666L
 private const val PC_SCREEN_LOG_TAG = "SCFT-PC-SCREEN"
 private const val READ_BUFFER_BYTES = 128 * 1024
-private const val MAX_PENDING_H264_BYTES = 2 * 1024 * 1024
+private const val DEFAULT_PENDING_H264_BYTES = 2 * 1024 * 1024
 private const val MAX_INPUT_NALS_PER_CYCLE = 32
 
 private val PC_SCREEN_PRESETS = listOf(
-    PcScreenPreset("2K", 2560, 1440, "24M"),
-    PcScreenPreset("Nhanh", 1920, 1080, "12M"),
-    PcScreenPreset("720p", 1280, 720, "8M")
+    PcScreenPreset("2K", 2560, 1440, "24M", DEFAULT_PENDING_H264_BYTES),
+    PcScreenPreset("Nhanh", 1600, 900, "6M", 768 * 1024),
+    PcScreenPreset("720p", 1280, 720, "4M", 512 * 1024)
 )
 
-private data class PcScreenPreset(val label: String, val width: Int, val height: Int, val bitrate: String) {
+private data class PcScreenPreset(val label: String, val width: Int, val height: Int, val bitrate: String, val pendingLimitBytes: Int) {
     fun streamUrl(displayIndex: Int): String = "$PC_SCREEN_STREAM_BASE_URL?display=$displayIndex&fps=60&format=h264&width=$width&height=$height&bitrate=$bitrate"
 }
 
@@ -286,7 +286,7 @@ private class LowLatencyH264Player(
             http.connect()
             if (http.responseCode !in 200..299) throw IllegalStateException("Stream HTTP ${http.responseCode}")
 
-            val chunks = EncodedChunkQueue(MAX_PENDING_H264_BYTES)
+            val chunks = EncodedChunkQueue(preset.pendingLimitBytes)
             val readerDone = AtomicBoolean(false)
             val reader = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
@@ -313,6 +313,7 @@ private class LowLatencyH264Player(
             var renderedThisSecond = 0
             var queuedThisSecond = 0
             var droppedThisSecond = 0
+            var maxBacklogKbThisSecond = 0
             var lastStatsAt = SystemClock.elapsedRealtime()
             while (running.get() && (!readerDone.get() || chunks.hasPending() || nalBuffer.size > 0)) {
                 drainLatest(decoder).also {
@@ -323,30 +324,32 @@ private class LowLatencyH264Player(
                 if (chunk != null) {
                     bytesThisSecond += chunk.size.toLong()
                     nalBuffer.append(chunk, chunk.size)
-                    if (nalBuffer.size > MAX_PENDING_H264_BYTES) {
-                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(MAX_PENDING_H264_BYTES / 3)
+                    if (nalBuffer.size > preset.pendingLimitBytes) {
+                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(preset.pendingLimitBytes / 3)
                     }
                     val result = feedAvailableNalUnits(decoder, nalBuffer, ptsUs)
                     ptsUs = result.nextPtsUs
                     queuedThisSecond += result.queuedFrames
                     renderedThisSecond += result.renderedFrames
                     droppedThisSecond += result.droppedFrames
-                    if (nalBuffer.size > MAX_PENDING_H264_BYTES) {
-                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(MAX_PENDING_H264_BYTES / 3)
+                    if (nalBuffer.size > preset.pendingLimitBytes) {
+                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(preset.pendingLimitBytes / 3)
                     }
                 }
 
+                maxBacklogKbThisSecond = max(maxBacklogKbThisSecond, (chunks.pendingBytes() + nalBuffer.size) / 1024)
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastStatsAt >= 1000L) {
                     val kbps = bytesThisSecond / 1024L
                     val net = if (latestNetworkRttMs >= 0L) "${latestNetworkRttMs} ms" else "-"
-                    val stats = "${preset.label} ${preset.width}x${preset.height} | ${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s | net ${net}"
+                    val stats = "${preset.label} ${preset.width}x${preset.height} | ${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s | buf ${maxBacklogKbThisSecond} KB | net ${net}"
                     Log.d(PC_SCREEN_LOG_TAG, stats)
                     post { onStats(stats) }
                     bytesThisSecond = 0L
                     renderedThisSecond = 0
                     queuedThisSecond = 0
                     droppedThisSecond = 0
+                    maxBacklogKbThisSecond = 0
                     lastStatsAt = now
                 }
             }
@@ -552,6 +555,12 @@ private class LowLatencyH264Player(
                 val chunk = chunks.removeFirst()
                 bytes -= chunk.size
                 return chunk
+            }
+        }
+
+        fun pendingBytes(): Int {
+            synchronized(lock) {
+                return bytes
             }
         }
 
