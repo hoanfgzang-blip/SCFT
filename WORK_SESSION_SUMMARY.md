@@ -103,3 +103,12 @@ Last updated: 2026-07-30 01:18:17
 - Real device `5f595062` test for `Nhanh 1280x720`: after startup it held 56-60 FPS, 0 drops, backlog about 84-88KB, RTT about 5-9ms.
 - Real device `5f595062` test for `Siêu nhanh 960x540`: held 53-62 FPS, 0 drops, backlog about 56-60KB, RTT about 7-8ms after startup.
 - This reduces transport pressure and queued video backlog. True end-to-end visual latency is still not proven at 5-10ms and needs a separate latency measurement path if that exact target must be verified.
+
+## 2026-07-30 - Latest-frame render for fast presets
+- Added `renderLatestOnly` on Android PC Screen presets.
+- `Nhanh` and `Siêu nhanh` now drop older ready decoder output when backlog exists, so these modes prioritize the newest frame over perfectly rendering every buffered frame.
+- `2K` and `Cân bằng` keep the previous render behavior to favor visual continuity.
+- Android build initially failed because drive C had 0GB free. Build passed by using `E:\tmp\scft-gradle-home` and `E:\tmp\scft-gradle-tmp`, with local JDK 21 at `C:\Users\Admin\.gradle\jdks\eclipse_adoptium-21-amd64-windows.2`.
+- Real device `5f595062` test for `Nhanh 1280x720` after latest-frame render: after startup it held 51-64 FPS, 0-1 drops/sec, backlog about 82-86KB, RTT about 4-10ms.
+- Real device `5f595062` test for `Siêu nhanh 960x540` after latest-frame render: held 45-59 FPS in the sampled run, 0-5 drops/sec, backlog about 57-67KB, RTT about 3-10ms.
+- Interpretation: `Nhanh` remains the better default fast mode; `Siêu nhanh` lowers transport pressure but can drop more frames depending on decoder timing.

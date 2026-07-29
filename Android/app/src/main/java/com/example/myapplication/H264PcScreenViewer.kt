@@ -55,12 +55,12 @@ private const val MAX_INPUT_NALS_PER_CYCLE = 32
 
 private val PC_SCREEN_PRESETS = listOf(
     PcScreenPreset("2K", 2560, 1440, "24M", DEFAULT_PENDING_H264_BYTES),
-    PcScreenPreset("Cân bằng", 1600, 900, "6M", 768 * 1024),
-    PcScreenPreset("Nhanh", 1280, 720, "4M", 384 * 1024),
-    PcScreenPreset("Siêu nhanh", 960, 540, "2M", 256 * 1024)
+    PcScreenPreset("C\u00e2n b\u1eb1ng", 1600, 900, "6M", 768 * 1024),
+    PcScreenPreset("Nhanh", 1280, 720, "4M", 384 * 1024, true),
+    PcScreenPreset("Si\u00eau nhanh", 960, 540, "2M", 256 * 1024, true)
 )
 
-private data class PcScreenPreset(val label: String, val width: Int, val height: Int, val bitrate: String, val pendingLimitBytes: Int) {
+private data class PcScreenPreset(val label: String, val width: Int, val height: Int, val bitrate: String, val pendingLimitBytes: Int, val renderLatestOnly: Boolean = false) {
     fun streamUrl(displayIndex: Int): String = "$PC_SCREEN_STREAM_BASE_URL?display=$displayIndex&fps=60&format=h264&width=$width&height=$height&bitrate=$bitrate"
 }
 
@@ -472,7 +472,7 @@ private class LowLatencyH264Player(
             }
         }
         if (ready.isEmpty()) return DrainResult(0, 0)
-        if (ready.size <= 2) {
+        if (!preset.renderLatestOnly && ready.size <= 2) {
             ready.forEach { decoder.releaseOutputBuffer(it, true) }
             return DrainResult(ready.size, 0)
         }
