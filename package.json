@@ -49,9 +49,15 @@
       {
         "from": "build-resources/platform-tools",
         "to": "platform-tools"
+      },
+      {
+        "from": "build-resources/virtual-display",
+        "to": "virtual-display",
+        "filter": ["**/*"]
       }
     ],
     "win": {
+      "requestedExecutionLevel": "requireAdministrator",
       "target": [
         {
           "target": "nsis",

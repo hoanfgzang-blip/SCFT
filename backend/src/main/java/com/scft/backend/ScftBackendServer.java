@@ -14,7 +14,6 @@ import java.awt.AWTException;
 import java.awt.Graphics2D;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
-import java.awt.Image;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.Robot;
@@ -42,6 +41,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
@@ -49,11 +50,16 @@ public final class ScftBackendServer {
     private static final int DEFAULT_PORT = 7878;
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final long MAX_UPLOAD_BYTES = 2L * 1024L * 1024L * 1024L;
+    private static final long SCREEN_FRAME_INTERVAL_MS = 33L;
+    private static final Path VIRTUAL_DISPLAY_FRAME_PATH = Path.of(System.getenv().getOrDefault("ProgramData", "C:\\ProgramData"), "SCFT", "virtual-display-frame.bmp");
+    private static final Map<Integer, Robot> SCREEN_ROBOTS = new HashMap<>();
 
     private final int port;
     private final Path uploadDir;
     private final String deviceId;
     private final String deviceName;
+    private final Map<String, ScreenFrame> screenFrames = new ConcurrentHashMap<>();
+    private final ExecutorService screenCaptureExecutor = Executors.newSingleThreadExecutor();
 
     private ScftBackendServer(int port, Path storageRoot) throws IOException {
         this.port = port;
@@ -201,11 +207,27 @@ public final class ScftBackendServer {
     private void handleScreenStatus(HttpExchange exchange) throws IOException {
         boolean available = !GraphicsEnvironment.isHeadless();
         int displays = 0;
+        String screenList = "[]";
         String error = "";
 
         if (available) {
             try {
-                displays = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices().length;
+                GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
+                displays = devices.length;
+                StringBuilder screens = new StringBuilder("[");
+                for (int index = 0; index < devices.length; index++) {
+                    Rectangle bounds = devices[index].getDefaultConfiguration().getBounds();
+                    if (index > 0) {
+                        screens.append(',');
+                    }
+                    screens.append("{\"index\":").append(index)
+                            .append(",\"id\":\"").append(json(devices[index].getIDstring())).append("\"")
+                            .append(",\"width\":").append(bounds.width)
+                            .append(",\"height\":").append(bounds.height)
+                            .append("}");
+                }
+                screens.append(']');
+                screenList = screens.toString();
             } catch (Exception exception) {
                 available = false;
                 error = exception.getMessage();
@@ -217,13 +239,13 @@ public final class ScftBackendServer {
         String body = "{"
                 + "\"available\":" + available + ","
                 + "\"displays\":" + displays + ","
+                + "\"screens\":" + screenList + ","
                 + "\"viewUrl\":\"/api/screen/view\","
                 + "\"frameUrl\":\"/api/screen/frame\","
                 + "\"error\":\"" + json(error) + "\""
                 + "}";
         sendJson(exchange, 200, body);
     }
-
     private void handleScreenFrame(HttpExchange exchange) throws IOException, AWTException {
         if (GraphicsEnvironment.isHeadless()) {
             sendJson(exchange, 503, "{\"error\":\"Screen capture is unavailable in headless mode\"}");
@@ -233,12 +255,16 @@ public final class ScftBackendServer {
         Map<String, String> params = queryParams(exchange.getRequestURI());
         double scale = clampDouble(params.get("scale"), 0.25, 1.0, 0.65);
         float quality = (float) clampDouble(params.get("quality"), 0.25, 0.95, 0.7);
-        byte[] image = captureScreenJpeg(scale, quality);
+        int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
+        ScreenFrame frame = currentScreenFrame(scale, quality, display);
+        byte[] image = frame.image;
 
         Headers headers = exchange.getResponseHeaders();
         headers.set("Content-Type", "image/jpeg");
         headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
         headers.set("Pragma", "no-cache");
+        headers.set("X-SCFT-Frame-Sequence", Long.toString(frame.sequence));
+        headers.set("X-SCFT-Frame-Age-Ms", Long.toString(Math.max(0L, System.currentTimeMillis() - frame.updatedAt)));
         headers.set("Content-Length", Integer.toString(image.length));
         exchange.sendResponseHeaders(200, image.length);
         try (OutputStream output = exchange.getResponseBody()) {
@@ -255,7 +281,7 @@ public final class ScftBackendServer {
                 + "</head><body>"
                 + "<img id=\"screen\" alt=\"PC screen\">"
                 + "<div class=\"bar\"><button id=\"full\">Fullscreen</button><select id=\"rate\"><option value=\"1000\">1 FPS</option><option value=\"500\" selected>2 FPS</option><option value=\"250\">4 FPS</option><option value=\"150\">6 FPS</option></select></div>"
-                + "<script>const img=document.getElementById('screen');const rate=document.getElementById('rate');let timer=null;function tick(){img.src='/api/screen/frame?scale=0.7&quality=0.68&t='+Date.now()}function run(){if(timer)clearInterval(timer);tick();timer=setInterval(tick,Number(rate.value))}rate.onchange=run;document.getElementById('full').onclick=()=>document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();run();</script>"
+                + "<script>const img=document.getElementById('screen');const rate=document.getElementById('rate');const display=new URLSearchParams(location.search).get('display')||'0';let timer=null;function tick(){img.src='/api/screen/frame?display='+encodeURIComponent(display)+'&scale=0.7&quality=0.68&t='+Date.now()}function run(){if(timer)clearInterval(timer);tick();timer=setInterval(tick,Number(rate.value))}rate.onchange=run;document.getElementById('full').onclick=()=>document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();run();</script>"
                 + "</body></html>";
         sendHtml(exchange, 200, body);
     }
@@ -381,11 +407,71 @@ public final class ScftBackendServer {
     }
 
 
-    private static byte[] captureScreenJpeg(double scale, float quality) throws IOException, AWTException {
-        Rectangle bounds = screenBounds();
-        Robot robot = new Robot();
-        BufferedImage captured = robot.createScreenCapture(bounds);
-        BufferedImage image = toRgb(scaleImage(captured, scale));
+    private ScreenFrame currentScreenFrame(double scale, float quality, int display) throws IOException, AWTException {
+        String key = display + ":" + Math.round(scale * 100) + ":" + Math.round(quality * 100);
+        ScreenFrame frame = screenFrames.computeIfAbsent(key, ignored -> new ScreenFrame());
+        long now = System.currentTimeMillis();
+        long sourceUpdatedAt = virtualDisplayFrameUpdatedAt(display);
+
+        synchronized (frame) {
+            if (frame.image == null) {
+                frame.image = captureScreenJpeg(scale, quality, display);
+                frame.updatedAt = now;
+                frame.sourceUpdatedAt = sourceUpdatedAt;
+                frame.sequence++;
+                return frame;
+            }
+
+            boolean sourceChanged = sourceUpdatedAt == 0L || sourceUpdatedAt > frame.sourceUpdatedAt;
+            if (sourceChanged && !frame.refreshing && now - frame.updatedAt >= SCREEN_FRAME_INTERVAL_MS) {
+                frame.refreshing = true;
+                screenCaptureExecutor.execute(() -> refreshScreenFrame(frame, scale, quality, display, sourceUpdatedAt));
+            }
+
+            return frame;
+        }
+    }
+
+    private void refreshScreenFrame(ScreenFrame frame, double scale, float quality, int display, long sourceUpdatedAt) {
+        byte[] image = null;
+        try {
+            image = captureScreenJpeg(scale, quality, display);
+        } catch (Exception error) {
+            error.printStackTrace();
+        }
+
+        synchronized (frame) {
+            if (image != null) {
+                frame.image = image;
+                frame.updatedAt = System.currentTimeMillis();
+                frame.sourceUpdatedAt = sourceUpdatedAt;
+                frame.sequence++;
+            }
+            frame.refreshing = false;
+        }
+    }
+
+    private static long virtualDisplayFrameUpdatedAt(int display) throws IOException {
+        if (display == 0 || !Files.isRegularFile(VIRTUAL_DISPLAY_FRAME_PATH)) {
+            return 0L;
+        }
+        return Files.getLastModifiedTime(VIRTUAL_DISPLAY_FRAME_PATH).toMillis();
+    }
+
+    private static BufferedImage virtualDisplayImage(int display) throws IOException {
+        if (virtualDisplayFrameUpdatedAt(display) == 0L) {
+            return null;
+        }
+        return ImageIO.read(VIRTUAL_DISPLAY_FRAME_PATH.toFile());
+    }
+    private static byte[] captureScreenJpeg(double scale, float quality, int display) throws IOException, AWTException {
+        BufferedImage captured = virtualDisplayImage(display);
+        if (captured == null) {
+            Rectangle bounds = screenBounds(display);
+            Robot robot = screenRobot(display);
+            captured = robot.createScreenCapture(bounds);
+        }
+        BufferedImage image = scaleImage(captured, scale);
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         ImageWriter writer = ImageIO.getImageWritersByFormatName("jpg").next();
@@ -403,15 +489,22 @@ public final class ScftBackendServer {
         return bytes.toByteArray();
     }
 
-    private static Rectangle screenBounds() {
-        Rectangle bounds = new Rectangle();
-        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
-        for (GraphicsDevice device : devices) {
-            bounds = bounds.union(device.getDefaultConfiguration().getBounds());
+    private static synchronized Robot screenRobot(int display) throws AWTException {
+        Robot robot = SCREEN_ROBOTS.get(display);
+        if (robot == null) {
+            robot = new Robot();
+            SCREEN_ROBOTS.put(display, robot);
         }
-        return bounds;
+        return robot;
     }
-
+    private static Rectangle screenBounds(int display) {
+        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
+        if (devices.length == 0) {
+            throw new IllegalStateException("No display is available");
+        }
+        int index = Math.min(Math.max(display, 0), devices.length - 1);
+        return devices[index].getDefaultConfiguration().getBounds();
+    }
     private static BufferedImage scaleImage(BufferedImage source, double scale) {
         if (scale >= 0.99) {
             return source;
@@ -419,27 +512,27 @@ public final class ScftBackendServer {
 
         int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
         int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
-        Image scaled = source.getScaledInstance(width, height, Image.SCALE_SMOOTH);
         BufferedImage target = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         Graphics2D graphics = target.createGraphics();
         graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-        graphics.drawImage(scaled, 0, 0, null);
+        graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
+        graphics.drawImage(source, 0, 0, width, height, null);
         graphics.dispose();
         return target;
     }
 
-    private static BufferedImage toRgb(BufferedImage source) {
-        if (source.getType() == BufferedImage.TYPE_INT_RGB) {
-            return source;
+
+    private static int clampInt(String raw, int min, int max, int fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
         }
-
-        BufferedImage target = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
-        Graphics2D graphics = target.createGraphics();
-        graphics.drawImage(source, 0, 0, null);
-        graphics.dispose();
-        return target;
+        try {
+            int value = Integer.parseInt(raw);
+            return Math.max(min, Math.min(max, value));
+        } catch (NumberFormatException error) {
+            return fallback;
+        }
     }
-
     private static double clampDouble(String raw, double min, double max, double fallback) {
         if (raw == null || raw.isBlank()) {
             return fallback;
@@ -607,6 +700,13 @@ public final class ScftBackendServer {
         void handle(HttpExchange exchange) throws Exception;
     }
 
+    private static final class ScreenFrame {
+        private volatile byte[] image;
+        private volatile long updatedAt;
+        private volatile long sequence;
+        private volatile long sourceUpdatedAt;
+        private boolean refreshing;
+    }
     private static final class NotFoundException extends RuntimeException {
         private NotFoundException(String message) {
             super(message);

@@ -1,66 +1,117 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="./Share/global.css">
     <link rel="stylesheet" href="./page/Home/Index.css">
-    <title>Document</title>
+    <title>SCFT - Trang chủ</title>
 </head>
-
 <body>
     <div class="app-layout">
-
         <aside id="sidebar-container" class="roSidebar"></aside>
-
         <div class="right-content">
-
             <header id="header-container" class="roHeader"></header>
-
-            <main class="main-content">
-                <div class="home_content">
-                    <h1>Connecting Device</h1>
-                    <div class="connecting_device" id="connecting_device">
+            <main class="main-content home-page">
+                <section class="home-topbar">
+                    <div>
+                        <span class="page-kicker">TRUNG TÂM ĐIỀU KHIỂN THIẾT BỊ</span>
+                        <h1>Không gian làm việc SCFT</h1>
+                        <p>Truyền tệp và điều khiển màn hình cho thiết bị Android đã kết nối.</p>
                     </div>
-                </div>
-                <div class="home_content">
-                    <h1>My Devices</h1>
-                    <div class="my_device_wrapper">
-                        <div class="my_device" id="my_device">
+                    <div class="dashboard-controls">
+                        <span class="live-status"><i></i>Tự cập nhật mỗi 3 giây</span>
+                        <span id="last_updated_text" class="last-updated">Đang chờ lần cập nhật đầu tiên</span>
+                        <button id="refresh_status_btn" class="secondary-btn" type="button">Cập nhật trạng thái</button>
+                    </div>
+                </section>
+
+                <section id="next_step" class="next-step-card">
+                    <div class="next-step-copy">
+                        <span class="page-kicker">BƯỚC TIẾP THEO</span>
+                        <h2 id="next_step_title">Đang kiểm tra kết nối</h2>
+                        <p id="next_step_detail">SCFT đang kiểm tra máy chủ và thiết bị Android.</p>
+                    </div>
+                    <div class="next-step-actions">
+                        <a id="primary_action" class="primary-action" href="FT.html">Mở Truyền tệp</a>
+                        <a class="secondary-action" href="SC.html">Sao chép màn hình</a>
+                    </div>
+                </section>
+                <section class="status-grid" aria-label="Trạng thái kết nối">
+                    <article class="status-card">
+                        <div class="status-card-head">
+                            <span>Máy chủ</span>
+                            <span id="backend_badge" class="status-badge offline">Đang kiểm tra</span>
                         </div>
-                        <button class="add-device-btn">
-                            <img src="./asset/circle-plus.svg" alt="">
-                            Add Device
-                        </button>
+                        <strong id="backend_value">Đang kiểm tra dịch vụ cục bộ...</strong>
+                        <p id="backend_detail">http://127.0.0.1:7878</p>
+                    </article>
+                    <article class="status-card">
+                        <div class="status-card-head">
+                            <span>Android qua USB</span>
+                            <span id="android_badge" class="status-badge offline">Đang kiểm tra</span>
+                        </div>
+                        <strong id="android_value">Đang kiểm tra ADB...</strong>
+                        <p id="android_detail">Cần bật gỡ lỗi USB</p>
+                    </article>
+                    <article class="status-card">
+                        <div class="status-card-head">
+                            <span>Chụp màn hình PC</span>
+                            <span id="capture_badge" class="status-badge offline">Đang kiểm tra</span>
+                        </div>
+                        <strong id="capture_value">Đang kiểm tra dịch vụ màn hình...</strong>
+                        <p id="capture_detail">Chiếu màn hình PC</p>
+                    </article>
+                </section>
+
+                <section class="home-section">
+                    <div class="section-heading">
+                        <h2>Thao tác nhanh</h2>
+                        <span>Chọn chức năng cần sử dụng</span>
                     </div>
-                </div>
-                <div class="home_content">
-                    <h1>History Connect</h1>
-                    <div class="table-wrapper">
-                        <table class="history-table">
+                    <div class="action-grid">
+                        <a class="action-card" href="FT.html">
+                            <span class="action-icon"><img src="./asset/open-folder.svg" alt=""></span>
+                            <div>
+                                <h3>Truyền tệp</h3>
+                                <p>Gửi tệp qua kết nối USB cục bộ.</p>
+                            </div>
+                            <span class="action-link">Mở</span>
+                        </a>
+                        <a class="action-card" href="SC.html">
+                            <span class="action-icon"><img src="./asset/smartphone.svg" alt=""></span>
+                            <div>
+                                <h3>Sao chép màn hình</h3>
+                                <p>Hiển thị màn hình Android trên máy tính.</p>
+                            </div>
+                            <span class="action-link">Mở</span>
+                        </a>
+                        <a class="action-card" href="PCScreen.html">
+                            <span class="action-icon"><img src="./asset/duplicate.svg" alt=""></span>
+                            <div>
+                                <h3>Chiếu màn hình PC</h3>
+                                <p>Hiển thị màn hình máy tính trong ứng dụng SCFT Android.</p>
+                            </div>
+                            <span class="action-link">Mở</span>
+                        </a>
+                    </div>
+                </section>
 
-                            <thead>
-                                <tr>
-                                    <th>Device Name</th>
-                                    <th>Last Time connected</th>
-                                    <th>ID</th>
-                                </tr>
-                            </thead>
-
-                            <tbody id="history_tbody">
-                            </tbody>
-
-                        </table>
-                    </div> 
-                </div>
+                <section class="home-section setup-section">
+                    <div class="section-heading">
+                        <h2>Sẵn sàng kết nối USB</h2>
+                        <span>Cần hoàn tất trước khi truyền hoặc chiếu màn hình</span>
+                    </div>
+                    <ol class="setup-list">
+                        <li><span>1</span><div><strong>Dùng cáp có truyền dữ liệu</strong><p>Kết nối điện thoại bằng cáp USB hỗ trợ truyền dữ liệu.</p></div></li>
+                        <li><span>2</span><div><strong>Cho phép gỡ lỗi USB</strong><p>Bật gỡ lỗi USB và chấp nhận thông báo RSA trên điện thoại.</p></div></li>
+                        <li><span>3</span><div><strong>Mở chức năng cần dùng</strong><p>Chọn Truyền tệp, Sao chép màn hình hoặc Chiếu màn hình PC ở phía trên.</p></div></li>
+                    </ol>
+                </section>
             </main>
-
         </div>
     </div>
-    <script src="./component/My_device_block/My_device_block.js"></script>
-    <script src="./component/Historytb/Htb.js"></script>
     <script src="./Share/LoadComponent.js"></script>
+    <script src="./page/Home/Index.js"></script>
 </body>
-
 </html>

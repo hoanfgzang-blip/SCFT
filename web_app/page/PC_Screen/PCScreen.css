@@ -1,4 +1,4 @@
-﻿.pc-screen-page {
+.pc-screen-page {
     display: flex;
     flex-direction: column;
     gap: 20px;
@@ -233,4 +233,33 @@
     .pc-grid {
         grid-template-columns: 1fr;
     }
+}
+
+.link-list select {
+    width: 100%;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-main);
+    padding: 9px 10px;
+    font-weight: 600;
+}
+.danger-btn {
+    border: 1px solid #d33;
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: #d33;
+    cursor: pointer;
+    font-weight: 600;
+    padding: 10px 16px;
+    transition: background-color 0.2s ease, opacity 0.2s ease;
+}
+
+.danger-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.danger-btn:hover:not(:disabled) {
+    background: #fff1f1;
 }

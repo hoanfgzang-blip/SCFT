@@ -1,13 +1,91 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
 let backendProcess = null;
+let virtualDisplayProcess = null;
 let runtimePaths = null;
 
-function getBundledResourcePath(name) {
+function waitForVirtualDisplay(timeoutMs) {
+    return new Promise(resolve => {
+        const deadline = Date.now() + timeoutMs;
+        const check = () => {
+            if (screen.getAllDisplays().length > 1 || Date.now() >= deadline) {
+                resolve();
+                return;
+            }
+            setTimeout(check, 250);
+        };
+        check();
+    });
+}
+
+function getVirtualDisplayAppPath() {
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'virtual-display', 'SCFTVirtualDisplayApp.exe');
+    }
+
+    return path.join(__dirname, 'windows_driver', 'SCFTVirtualDisplay', 'bin', 'SCFTVirtualDisplayApp.exe');
+}
+
+function getVirtualDisplayDriverPath() {
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, "virtual-display", "driver", "SCFTVirtualDisplayDriver.inf");
+    }
+
+    return path.join(__dirname, "windows_driver", "SCFTVirtualDisplay", "x64", "Release", "SCFTVirtualDisplayDriver", "SCFTVirtualDisplayDriver.inf");
+}
+
+function installVirtualDisplayDriver() {
+    if (!app.isPackaged) return Promise.resolve();
+    const driverPath = getVirtualDisplayDriverPath();
+    if (!fs.existsSync(driverPath)) return Promise.resolve();
+
+    return new Promise(resolve => {
+        execFile("pnputil.exe", ["/add-driver", driverPath, "/install"], { windowsHide: true }, () => resolve());
+    });
+}
+async function startVirtualDisplay() {
+    if (virtualDisplayProcess || screen.getAllDisplays().length > 1) return;
+
+    const appPath = getVirtualDisplayAppPath();
+    if (!fs.existsSync(appPath)) return;
+
+    if (app.isPackaged) {
+        virtualDisplayProcess = spawn(appPath, [], {
+            windowsHide: true,
+            stdio: 'ignore'
+        });
+
+        virtualDisplayProcess.on('exit', () => {
+            virtualDisplayProcess = null;
+        });
+    } else {
+        const command = `Start-Process -FilePath '${appPath.replace(/'/g, "''")}' -Verb RunAs -WindowStyle Hidden`;
+        execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+            windowsHide: true
+        });
+    }
+
+    await waitForVirtualDisplay(8000);
+}
+
+function stopVirtualDisplay() {
+    if (virtualDisplayProcess) {
+        virtualDisplayProcess.kill();
+        virtualDisplayProcess = null;
+        return Promise.resolve();
+    }
+
+    if (app.isPackaged) return Promise.resolve();
+
+    const command = "Start-Process -FilePath 'taskkill.exe' -ArgumentList '/F','/IM','SCFTVirtualDisplayApp.exe' -Verb RunAs -Wait -WindowStyle Hidden";
+    return new Promise(resolve => {
+        execFile("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], { windowsHide: true }, () => resolve());
+    });
+}function getBundledResourcePath(name) {
     if (app.isPackaged) {
         return path.join(process.resourcesPath, name);
     }
@@ -36,6 +114,11 @@ function copyDirectoryIfAvailable(source, destination) {
 }
 
 function prepareBundledRuntime() {
+    if (!app.isPackaged) {
+        runtimePaths = null;
+        return;
+    }
+
     const runtimeRoot = path.join(app.getPath('userData'), 'runtime');
     const javaSource = getBundledResourcePath('java-runtime');
     const adbSource = getBundledResourcePath('platform-tools');
@@ -149,7 +232,7 @@ function runAdb(args, callback) {
     tryCandidate(0);
 }
 
-function startUsbTunnel() {
+function startUsbTunnel(port) {
     runAdb(['devices'], (error, stdout) => {
         if (error) return;
 
@@ -158,8 +241,7 @@ function startUsbTunnel() {
             .some(line => /\tdevice$/.test(line.trim()));
 
         if (!hasDevice) return;
-
-        runAdb(['reverse', 'tcp:7878', 'tcp:7878'], () => {});
+        runAdb(['reverse', `tcp:${port}`, `tcp:${port}`], () => {});
     });
 }
 
@@ -178,10 +260,23 @@ function createWindow() {
     win.loadFile('web_app/index.html');
 }
 
-app.whenReady().then(() => {
+
+ipcMain.handle("scft-virtual-display-start", async () => {
+    await installVirtualDisplayDriver();
+    await startVirtualDisplay();
+    return screen.getAllDisplays().length;
+});
+
+ipcMain.handle("scft-virtual-display-stop", async () => {
+    await stopVirtualDisplay();
+    return screen.getAllDisplays().length;
+});
+app.whenReady().then(async () => {
     prepareBundledRuntime();
+    await installVirtualDisplayDriver();
+    await startVirtualDisplay();
     startBackend();
-    startUsbTunnel();
+    startUsbTunnel(7878);
     createWindow();
 
     app.on('activate', () => {
@@ -192,6 +287,7 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => {
+    stopVirtualDisplay();
     stopBackend();
 });
 
