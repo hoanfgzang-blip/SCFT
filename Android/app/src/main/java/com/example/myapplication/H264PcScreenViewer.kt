@@ -55,8 +55,9 @@ private const val MAX_INPUT_NALS_PER_CYCLE = 32
 
 private val PC_SCREEN_PRESETS = listOf(
     PcScreenPreset("2K", 2560, 1440, "24M", DEFAULT_PENDING_H264_BYTES),
-    PcScreenPreset("Nhanh", 1600, 900, "6M", 768 * 1024),
-    PcScreenPreset("720p", 1280, 720, "4M", 512 * 1024)
+    PcScreenPreset("Cân bằng", 1600, 900, "6M", 768 * 1024),
+    PcScreenPreset("Nhanh", 1280, 720, "4M", 384 * 1024),
+    PcScreenPreset("Siêu nhanh", 960, 540, "2M", 256 * 1024)
 )
 
 private data class PcScreenPreset(val label: String, val width: Int, val height: Int, val bitrate: String, val pendingLimitBytes: Int) {

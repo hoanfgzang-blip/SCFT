@@ -90,3 +90,16 @@ Last updated: 2026-07-30 01:18:17
 - Kept the `buf X KB` overlay/log metric so internal backlog can be seen directly.
 - Android build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
 - Real device `5f595062` test for `Nhanh 1600x900`: after startup it held mostly 59-63 FPS, 0 drops, backlog about 110-116KB, RTT about 5-10ms.
+
+## 2026-07-30 - Faster Android presets for PC Screen
+- User reported `Nhanh` mode still had too much stutter and accepted reducing quality more when the preset is meant to prioritize speed.
+- Changed Android PC Screen presets:
+  - `2K`: 2560x1440/24M, 2MB pending queue, kept for quality.
+  - `Cân bằng`: 1600x900/6M, 768KB pending queue, moved from the old fast preset.
+  - `Nhanh`: 1280x720/4M, 384KB pending queue, now optimized for lower delay.
+  - `Siêu nhanh`: 960x540/2M, 256KB pending queue, lowest-latency fallback.
+- Android build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
+- Real device `5f595062` UI dump confirmed all four preset buttons and Start/Stop/Back buttons fit in landscape.
+- Real device `5f595062` test for `Nhanh 1280x720`: after startup it held 56-60 FPS, 0 drops, backlog about 84-88KB, RTT about 5-9ms.
+- Real device `5f595062` test for `Siêu nhanh 960x540`: held 53-62 FPS, 0 drops, backlog about 56-60KB, RTT about 7-8ms after startup.
+- This reduces transport pressure and queued video backlog. True end-to-end visual latency is still not proven at 5-10ms and needs a separate latency measurement path if that exact target must be verified.
