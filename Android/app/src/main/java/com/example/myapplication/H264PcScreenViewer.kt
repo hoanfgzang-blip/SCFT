@@ -44,8 +44,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 private const val PC_SCREEN_STREAM_BASE_URL = "http://127.0.0.1:7878/api/screen/stream"
+private const val PC_SCREEN_LATENCY_URL = "http://127.0.0.1:7878/api/screen/latency"
 private const val FRAME_INTERVAL_US = 16_666L
 private const val PC_SCREEN_LOG_TAG = "SCFT-PC-SCREEN"
+private const val READ_BUFFER_BYTES = 128 * 1024
+private const val MAX_PENDING_H264_BYTES = 2 * 1024 * 1024
+private const val MAX_INPUT_NALS_PER_CYCLE = 32
 
 private val PC_SCREEN_PRESETS = listOf(
     PcScreenPreset("Nhanh", 1080, 920, "6M"),
@@ -234,12 +238,15 @@ private class LowLatencyH264Player(
     private val running = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var thread: Thread? = null
+    private var latencyThread: Thread? = null
+    @Volatile private var latestNetworkRttMs = -1L
     private var connection: HttpURLConnection? = null
     private var codec: MediaCodec? = null
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
         thread = Thread(::run, "scft-low-latency-h264").also { it.start() }
+        latencyThread = Thread(::runLatencyProbe, "scft-screen-rtt").also { it.start() }
     }
 
     fun stop() {
@@ -275,7 +282,7 @@ private class LowLatencyH264Player(
             if (http.responseCode !in 200..299) throw IllegalStateException("Stream HTTP ${http.responseCode}")
 
             http.inputStream.use { input ->
-                val readBuffer = ByteArray(256 * 1024)
+                val readBuffer = ByteArray(READ_BUFFER_BYTES)
                 val nalBuffer = NalBuffer()
                 var ptsUs = 0L
                 var bytesThisSecond = 0L
@@ -292,17 +299,23 @@ private class LowLatencyH264Player(
                     if (read <= 0) break
                     bytesThisSecond += read
                     nalBuffer.append(readBuffer, read)
+                    if (nalBuffer.size > MAX_PENDING_H264_BYTES) {
+                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(MAX_PENDING_H264_BYTES / 3)
+                    }
                     val result = feedAvailableNalUnits(decoder, nalBuffer, ptsUs)
                     ptsUs = result.nextPtsUs
                     queuedThisSecond += result.queuedFrames
                     renderedThisSecond += result.renderedFrames
                     droppedThisSecond += result.droppedFrames
-                    if (nalBuffer.size > 4 * 1024 * 1024) nalBuffer.keepTail(256 * 1024)
+                    if (nalBuffer.size > MAX_PENDING_H264_BYTES) {
+                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(MAX_PENDING_H264_BYTES / 3)
+                    }
 
                     val now = SystemClock.elapsedRealtime()
                     if (now - lastStatsAt >= 1000L) {
                         val kbps = bytesThisSecond / 1024L
-                        val stats = "${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s"
+                        val net = if (latestNetworkRttMs >= 0L) "${latestNetworkRttMs} ms" else "-"
+                        val stats = "${renderedThisSecond} FPS | ${queuedThisSecond} NAL | ${droppedThisSecond} drop | ${kbps} KB/s | net ${net}"
                         Log.d(PC_SCREEN_LOG_TAG, stats)
                         post { onStats(stats) }
                         bytesThisSecond = 0L
@@ -324,6 +337,43 @@ private class LowLatencyH264Player(
         }
     }
 
+    private fun runLatencyProbe() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+        while (running.get()) {
+            latestNetworkRttMs = measureNetworkRttMs()
+            var slept = 0
+            while (running.get() && slept < 1000) {
+                Thread.sleep(100)
+                slept += 100
+            }
+        }
+    }
+
+    private fun measureNetworkRttMs(): Long {
+        val startedAt = SystemClock.elapsedRealtime()
+        var http: HttpURLConnection? = null
+        return try {
+            http = URL(PC_SCREEN_LATENCY_URL).openConnection() as HttpURLConnection
+            http.connectTimeout = 250
+            http.readTimeout = 250
+            http.useCaches = false
+            http.connect()
+            if (http.responseCode !in 200..299) return -1L
+            http.inputStream.use { input ->
+                val buffer = ByteArray(64)
+                input.read(buffer)
+            }
+            SystemClock.elapsedRealtime() - startedAt
+        } catch (_: Exception) {
+            -1L
+        } finally {
+            try {
+                http?.disconnect()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private fun feedAvailableNalUnits(decoder: MediaCodec, buffer: NalBuffer, startPtsUs: Long): FeedResult {
         var ptsUs = startPtsUs
         var rendered = 0
@@ -335,7 +385,7 @@ private class LowLatencyH264Player(
             return FeedResult(ptsUs, rendered, queued, 0)
         }
         var next = findStartCode(buffer.data, first + startCodeLength(buffer.data, first, buffer.size), buffer.size)
-        while (next >= 0 && running.get()) {
+        while (next >= 0 && running.get() && queued < MAX_INPUT_NALS_PER_CYCLE) {
             val queueResult = queue(decoder, buffer.data, first, next - first, ptsUs)
             queued += queueResult.queuedFrames
             rendered += queueResult.renderedFrames
@@ -469,6 +519,43 @@ private class LowLatencyH264Player(
         fun keepTail(length: Int) {
             if (size <= length) return
             dropBefore(size - length)
+        }
+
+        fun keepLatestKeyframeOrTail(tailLength: Int): Int {
+            if (size <= tailLength) return 0
+            var droppedNalUnits = 0
+            var latestKeyframe = -1
+            var current = findLocalStartCode(0)
+            while (current >= 0) {
+                val next = findLocalStartCode(current + localStartCodeLength(current))
+                val payload = current + localStartCodeLength(current)
+                if (payload < size) {
+                    val nalType = data[payload].toInt() and 0x1F
+                    if (nalType == 5 || nalType == 7 || nalType == 8) latestKeyframe = current
+                }
+                if (next < 0) break
+                if (current < size - tailLength) droppedNalUnits++
+                current = next
+            }
+            val keepFrom = if (latestKeyframe > 0 && latestKeyframe < size) latestKeyframe else max(0, size - tailLength)
+            dropBefore(keepFrom)
+            return droppedNalUnits
+        }
+
+        private fun findLocalStartCode(from: Int): Int {
+            var index = max(0, from)
+            while (index <= size - 3) {
+                if (data[index] == 0.toByte() && data[index + 1] == 0.toByte()) {
+                    if (data[index + 2] == 1.toByte()) return index
+                    if (index <= size - 4 && data[index + 2] == 0.toByte() && data[index + 3] == 1.toByte()) return index
+                }
+                index++
+            }
+            return -1
+        }
+
+        private fun localStartCodeLength(offset: Int): Int {
+            return if (offset <= size - 4 && data[offset + 2] == 0.toByte() && data[offset + 3] == 1.toByte()) 4 else 3
         }
 
         private fun ensure(required: Int) {

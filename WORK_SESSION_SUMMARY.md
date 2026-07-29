@@ -45,3 +45,12 @@ Last updated: 2026-07-30 01:18:17
 2. If proving latency is required, add explicit latency measurement instead of relying on FPS/drop metrics.
 3. Package a new desktop build after the user confirms the phone-side visual result is acceptable.
 4. Do not commit or push unless the user asks.
+## 2026-07-30 - Low-latency PC screen tuning
+- Pushed existing work first at commit 6226038a on main.
+- Added Android-side network RTT probe for PC Screen stream through `/api/screen/latency`; overlay/log now shows `net X ms`.
+- Android H.264 viewer now uses a smaller 128KB read buffer, caps pending H.264 data at 2MB, and only drops stale buffered data when backlog grows.
+- Backend H.264 encoder now uses shorter GOP/keyframe interval (`max(6, fps / 4)`) so recovery is faster after a dropped backlog.
+- Backend Java compile passed with `powershell -ExecutionPolicy Bypass -File .\backend\run.ps1 -CompileOnly`.
+- Android debug build passed with `C:\tmp\scft-android\gradlew.bat :app:assembleDebug`.
+- Real device `5f595062` test after tuning: mostly 57-62 FPS, low drops, ADB RTT usually 4-13ms; one initial second at 45 FPS during startup.
+- Important finding: transfer/network delay is low; perceived >100ms delay is more likely encode/decode/display buffering or Windows capture/encoder behavior than ADB transport.

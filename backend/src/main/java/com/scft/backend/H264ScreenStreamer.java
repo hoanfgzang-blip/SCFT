@@ -91,11 +91,11 @@ final class H264ScreenStreamer implements AutoCloseable {
         }
         command.addAll(List.of("-an", "-c:v", encoder));
         if ("h264_nvenc".equalsIgnoreCase(encoder)) {
-            command.addAll(List.of("-preset", "p1", "-tune", "ull", "-rc-lookahead", "0", "-delay", "0", "-zerolatency", "1", "-bf", "0", "-g", Integer.toString(Math.max(1, fps / 2)), "-b:v", bitrate));
+            command.addAll(List.of("-preset", "p1", "-tune", "ull", "-rc-lookahead", "0", "-delay", "0", "-zerolatency", "1", "-bf", "0", "-g", Integer.toString(keyframeInterval()), "-b:v", bitrate));
         } else if ("h264_mf".equalsIgnoreCase(encoder)) {
-            command.addAll(List.of("-rate_control", "ld_vbr", "-scenario", "display_remoting", "-g", Integer.toString(Math.max(1, fps / 2)), "-bf", "0", "-b:v", bitrate));
+            command.addAll(List.of("-rate_control", "ld_vbr", "-scenario", "display_remoting", "-g", Integer.toString(keyframeInterval()), "-bf", "0", "-b:v", bitrate));
         } else {
-            command.addAll(List.of("-preset", "ultrafast", "-tune", "zerolatency", "-g", Integer.toString(Math.max(1, fps / 2)), "-bf", "0", "-b:v", bitrate));
+            command.addAll(List.of("-preset", "ultrafast", "-tune", "zerolatency", "-g", Integer.toString(keyframeInterval()), "-bf", "0", "-b:v", bitrate));
         }
         command.addAll(List.of("-flush_packets", "1"));
         if ("h264".equalsIgnoreCase(format)) {
@@ -105,6 +105,10 @@ final class H264ScreenStreamer implements AutoCloseable {
         }
     }
 
+
+    private int keyframeInterval() {
+        return Math.max(6, fps / 4);
+    }
 
     private static String sanitizeBitrate(String value) {
         if (value == null || value.isBlank()) {
