@@ -329,6 +329,7 @@ function createWindow() {
     });
 
     win.loadFile('web_app/index.html');
+    win.removeMenu();
 }
 
 function createPopoutWindow(adbPath) {
