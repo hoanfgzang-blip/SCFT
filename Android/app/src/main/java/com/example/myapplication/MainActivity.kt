@@ -60,7 +60,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
-
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.runtime.LaunchedEffect
+import java.io.IOException
+import org.json.JSONObject
 private const val BACKEND_URL = "http://127.0.0.1:7878"
 private const val MAX_UPLOAD_BYTES = 2L * 1024L * 1024L * 1024L
 private val AppBackground = Color(0xFFF6F7F9)
@@ -116,6 +119,33 @@ fun UsbFileTransferScreen(
     var status by remember { mutableStateOf("Kết nối USB, bật gỡ lỗi USB rồi chọn tệp cần gửi.") }
     var uploading by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
+    var remoteFiles by remember {
+        mutableStateOf<List<RemoteFile>>(emptyList())
+    }
+    var loadingRemoteFiles by remember {
+        mutableStateOf(false)
+    }
+    var remoteFilesError by remember {
+        mutableStateOf<String?>(null)
+    }
+    var pendingDownloadFile by remember {
+        mutableStateOf<RemoteFile?>(null)
+    }
+    var downloadingFileId by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    suspend fun refreshRemoteFiles() {
+        loadingRemoteFiles = true
+        try {
+            remoteFiles = fetchRemoteFiles()
+            remoteFilesError = null
+        } catch (error: Exception) {
+            remoteFilesError = error.message ?: "Không thể tải danh sách file."
+        } finally {
+            loadingRemoteFiles = false
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         selectedUri = uri
@@ -136,6 +166,24 @@ fun UsbFileTransferScreen(
         progress = 0f
     }
 
+    val downloadPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { destinationUri ->
+        val file = pendingDownloadFile
+        pendingDownloadFile = null
+
+        if (destinationUri == null || file == null) return@rememberLauncherForActivityResult
+
+        downloadingFileId = file.id
+        scope.launch {
+            status = downloadRemoteFile(context, file, destinationUri)
+            downloadingFileId = null
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshRemoteFiles()
+    }
     Scaffold(
         modifier = modifier,
         containerColor = AppBackground,
@@ -144,7 +192,8 @@ fun UsbFileTransferScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 15.dp),
+                        .statusBarsPadding()
+                        .padding(horizontal = 20.dp, vertical = 5.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -210,6 +259,23 @@ fun UsbFileTransferScreen(
             }
 
             TransferStatusCard(status)
+
+            RemoteFilesCard(
+                files = remoteFiles,
+                loading = loadingRemoteFiles,
+                error = remoteFilesError,
+                downloadingFileId = downloadingFileId,
+                onRefresh = {
+                    scope.launch {
+                        refreshRemoteFiles()
+                    }
+                },
+                onDownload = { file ->
+                    pendingDownloadFile = file
+                    downloadPicker.launch(file.originalName)
+                }
+            )
+
             UsbGuideCard()
         }
     }
@@ -414,6 +480,159 @@ private fun UsbGuideCard() {
     }
 }
 
+@Composable
+private fun RemoteFilesCard(
+    files: List<RemoteFile>,
+    loading: Boolean,
+    error: String?,
+    downloadingFileId: String?,
+    onRefresh: () -> Unit,
+    onDownload: (RemoteFile) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = AppSurface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "File đã được truyền",
+                        color = AppText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Các file đã được gửi lên SCFT",
+                        color = AppMuted,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onRefresh,
+                    enabled = !loading,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(if (loading) "Đang tải" else "Làm mới")
+                }
+            }
+
+            HorizontalDivider(color = AppBorder)
+
+            when {
+                loading -> {
+                    Text(
+                        text = "Đang tải danh sách file...",
+                        color = AppMuted,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                error != null -> {
+                    Text(
+                        text = "Không thể tải danh sách file: $error",
+                        color = AppWarning,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                files.isEmpty() -> {
+                    Text(
+                        text = "Chưa có file nào từ máy tính.",
+                        color = AppMuted,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                else -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        files.forEach { file ->
+                            RemoteFileRow(
+                                file = file,
+                                downloading = downloadingFileId == file.id,
+                                onDownload = { onDownload(file) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteFileRow(
+    file: RemoteFile,
+    downloading: Boolean,
+    onDownload: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = AppBackground,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .background(AppPrimarySoft, RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "FILE",
+                    color = AppPrimary,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = file.originalName,
+                    color = AppText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = formatBytes(file.size),
+                    color = AppMuted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            OutlinedButton(
+                onClick = onDownload,
+                enabled = !downloading,
+                border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text(if (downloading) "Đang tải" else "Tải xuống")
+            }
+        }
+    }
+}
+
 private suspend fun uploadFile(
     context: Context,
     uri: Uri,
@@ -471,10 +690,109 @@ private suspend fun uploadFile(
         connection.disconnect()
     }
 }
+private suspend fun fetchRemoteFiles(): List<RemoteFile> =
+    withContext(Dispatchers.IO) {
+        val url = URL("$BACKEND_URL/api/files")
+        val connection = url.openConnection() as HttpURLConnection
+
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 7000
+            connection.readTimeout = 30000
+
+            val responseCode = connection.responseCode
+            val responseStream =
+                if (responseCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    connection.errorStream
+                }
+
+            val responseBody = responseStream
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                .orEmpty()
+
+            if (responseCode !in 200..299) {
+                throw IOException("HTTP $responseCode: $responseBody")
+            }
+
+            val json = JSONObject(responseBody)
+            val jsonFiles = json.optJSONArray("files") ?: return@withContext emptyList()
+
+            buildList {
+                for (index in 0 until jsonFiles.length()) {
+                    val item = jsonFiles.getJSONObject(index)
+
+                    add(
+                        RemoteFile(
+                            id = item.getString("id"),
+                            originalName = item.getString("originalName"),
+                            size = item.optLong("size", 0L),
+                            uploadedAt = item.optString("uploadedAt"),
+                            downloadUrl = item.getString("downloadUrl")
+                        )
+                    )
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+private suspend fun downloadRemoteFile(
+    context: Context,
+    file: RemoteFile,
+    destinationUri: Uri
+): String = withContext(Dispatchers.IO) {
+    val url = URL("$BACKEND_URL${file.downloadUrl}")
+    val connection = url.openConnection() as HttpURLConnection
+
+    try {
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 7000
+        connection.readTimeout = 30000
+
+        val responseCode = connection.responseCode
+        if (responseCode !in 200..299) {
+            val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            return@withContext "Tải file thất bại: HTTP $responseCode ${error.take(120)}"
+        }
+
+        val output = context.contentResolver.openOutputStream(destinationUri)
+            ?: return@withContext "Không thể mở nơi lưu file."
+
+        connection.inputStream.use { input ->
+            output.use { target ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    target.write(buffer, 0, read)
+                }
+                target.flush()
+            }
+        }
+
+        "Đã tải file ${file.originalName} xuống điện thoại."
+    } catch (error: Exception) {
+        "Tải file thất bại: ${error.message ?: "Lỗi kết nối"}"
+    } finally {
+        connection.disconnect()
+    }
+}
 
 private data class PickedFileInfo(
     val name: String,
     val size: Long?
+)
+
+private data class RemoteFile(
+    val id: String,
+    val originalName: String,
+    val size: Long,
+    val uploadedAt: String,
+    val downloadUrl: String
 )
 
 private fun Context.readFileInfo(uri: Uri): PickedFileInfo {

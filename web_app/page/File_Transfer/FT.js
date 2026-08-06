@@ -135,33 +135,10 @@ function createFileRow(file) {
     const uploadedCell = document.createElement("td");
     uploadedCell.textContent = formatDate(file.uploadedAt);
 
-    const actionsCell = document.createElement("td");
-    const actions = document.createElement("div");
-    actions.className = "file-actions";
-
-    const downloadBtn = document.createElement("button");
-    downloadBtn.className = "file-action-btn";
-    downloadBtn.type = "button";
-    downloadBtn.textContent = "Download";
-    downloadBtn.addEventListener("click", () => {
-        window.open(`${BACKEND_URL}${file.downloadUrl}`, "_blank");
-    });
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "file-action-btn danger";
-    deleteBtn.type = "button";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", () => deleteFile(file.id));
-
-    actions.appendChild(downloadBtn);
-    actions.appendChild(deleteBtn);
-    actionsCell.appendChild(actions);
-
     row.appendChild(nameCell);
     row.appendChild(sizeCell);
     row.appendChild(senderCell);
     row.appendChild(uploadedCell);
-    row.appendChild(actionsCell);
 
     return row;
 }
@@ -249,26 +226,6 @@ function uploadSelectedFile() {
     });
 
     request.send(selectedFile);
-}
-
-async function deleteFile(id) {
-    if (!id) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`${BACKEND_URL}/api/files/${id}`, {
-            method: "DELETE"
-        });
-
-        if (!response.ok) {
-            throw new Error("Delete failed");
-        }
-
-        await loadFiles();
-    } catch (error) {
-        setUploadMessage("Cannot delete file. Backend may be offline.", "error");
-    }
 }
 
 function setUploadMessage(text, type) {
