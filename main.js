@@ -53,15 +53,30 @@ async function isVddInstalled() {
 async function getVddDeviceStatus() {
     try {
         const output = await runExternal('pnputil.exe', ['/enum-devices', '/class', 'Display']);
-        const nodes = output.match(/Device Description:\s+Virtual Display Driver/gi) || [];
-        const started = output.match(/Status:\s+Started/gi) || [];
-        return { installed: nodes.length > 0, nodeCount: nodes.length, startedCount: started.length, output };
+        const blocks = output.split(/(?=Instance ID:\s*)/gi);
+        const vddBlocks = blocks.filter(block => /Device Description:\s+Virtual Display Driver/i.test(block));
+        const started = vddBlocks.filter(block => /Status:\s+Started/i.test(block));
+        return { installed: vddBlocks.length > 0, nodeCount: vddBlocks.length, startedCount: started.length, output };
     } catch (_) {
         return { installed: false, nodeCount: 0, startedCount: 0, output: '' };
     }
 }
 
 async function installVdd() {
+    try {
+        const installed = await runExternal('winget.exe', [
+            'list',
+            '--id', VDD_WINGET_ID,
+            '--exact',
+            '--accept-source-agreements'
+        ]);
+        if (new RegExp(VDD_WINGET_ID, 'i').test(installed)) {
+            return;
+        }
+    } catch (_) {
+        // Continue to the install command when winget cannot report state.
+    }
+
     try {
         await runExternal('winget.exe', [
             'install',
@@ -128,6 +143,26 @@ function launchVddControl() {
     return true;
 }
 
+function setVddDisplayCount(count = 1) {
+    const safeCount = Math.max(0, Math.min(1, Math.floor(Number(count) || 0)));
+    const command = `
+$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'MTTVirtualDisplayPipe', [System.IO.Pipes.PipeDirection]::Out)
+$pipe.Connect(3000)
+$bytes = [System.Text.Encoding]::Unicode.GetBytes('SETDISPLAYCOUNT ${safeCount}')
+$pipe.Write($bytes, 0, $bytes.Length)
+$pipe.Flush()
+$pipe.Dispose()
+`;
+    return runExternal('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        command
+    ], { timeout: 10000 });
+}
+
 function startVddRepair() {
     const scriptPath = path.join(__dirname, 'scripts', 'repair-vdd.ps1');
     if (!fs.existsSync(scriptPath)) {
@@ -147,10 +182,6 @@ function startVddRepair() {
 }
 
 async function ensureVirtualDisplay() {
-    if (screen.getAllDisplays().length > 1) {
-        return { ready: true, displays: screen.getAllDisplays().length, driverInstalled: true };
-    }
-
     let status = await getVddDeviceStatus();
     if (status.nodeCount > 1) {
         const error = new Error(`Windows đang có ${status.nodeCount} node Virtual Display Driver bị trùng. Hãy gỡ sạch VDD bằng PowerShell Administrator rồi cài lại một lần.`);
@@ -171,6 +202,16 @@ async function ensureVirtualDisplay() {
     }
 
     const controlOpened = launchVddControl();
+    try {
+        // VDD creates the PnP node during install, but the node only becomes
+        // an active Windows display after SETDISPLAYCOUNT 1 is sent over its
+        // named pipe. This also avoids asking users to open VDD Control and
+        // press a second Enable/Install button after a reboot.
+        await setVddDisplayCount(1);
+    } catch (_) {
+        // The pipe may need a moment to start; the display wait below remains
+        // the authoritative readiness check.
+    }
     const appeared = await waitForVirtualDisplay(controlOpened ? 60000 : 15000);
     if (!appeared) {
         status = await getVddDeviceStatus();
@@ -187,6 +228,14 @@ async function ensureVirtualDisplay() {
         throw error;
     }
 
+    status = await getVddDeviceStatus();
+    if (!status.installed || status.startedCount < 1) {
+        const error = new Error('Virtual Display Driver đã cài nhưng Windows chưa khởi động màn hình ảo. Hãy bật Install/Enable trong VDD Control rồi thử lại.');
+        error.code = 'VDD_DISPLAY_NOT_READY';
+        throw error;
+    }
+
+    await setVirtualDisplayMode();
     return { ready: true, displays: screen.getAllDisplays().length, driverInstalled: true };
 }
 
@@ -239,14 +288,23 @@ $CDS_UPDATEREGISTRY=0x1;
 for($i=0;$i -lt 20;$i++){
   $d=New-Object ScftDisplayModeApi+DISPLAY_DEVICE;
   $d.cb=[Runtime.InteropServices.Marshal]::SizeOf([type]'ScftDisplayModeApi+DISPLAY_DEVICE');
-  if(-not [ScftDisplayModeApi]::EnumDisplayDevices([IntPtr]::Zero,$i,[ref]$d,0)){ break }
-  if($d.DeviceString -ne 'SCFT Virtual Display' -and $d.DeviceID -ne 'SCFTVirtualDisplayDriver'){ continue }
-  $m=New-Object ScftDisplayModeApi+DEVMODE;
+   if(-not [ScftDisplayModeApi]::EnumDisplayDevices([IntPtr]::Zero,$i,[ref]$d,0)){ break }
+    if($d.DeviceString -notmatch '^(Virtual Display Driver|SCFT Virtual Display)$' -and $d.DeviceID -notmatch '^Root\\MttVDD$|SCFTVirtualDisplayDriver'){ continue }
+   $supports1600=$false;
+   for($mode=0;$mode -lt 256;$mode++){
+     $candidate=New-Object ScftDisplayModeApi+DEVMODE;
+     $candidate.dmSize=[Runtime.InteropServices.Marshal]::SizeOf([type]'ScftDisplayModeApi+DEVMODE');
+     if(-not [ScftDisplayModeApi]::EnumDisplaySettings($d.DeviceName,$mode,[ref]$candidate)){ break }
+     if($candidate.dmPelsWidth -eq 2560 -and $candidate.dmPelsHeight -eq 1600 -and $candidate.dmDisplayFrequency -eq 60){ $supports1600=$true; break }
+   }
+   $targetWidth=if($supports1600){2560}else{2560};
+   $targetHeight=if($supports1600){1600}else{1440};
+   $m=New-Object ScftDisplayModeApi+DEVMODE;
   $m.dmSize=[Runtime.InteropServices.Marshal]::SizeOf([type]'ScftDisplayModeApi+DEVMODE');
   [void][ScftDisplayModeApi]::EnumDisplaySettings($d.DeviceName,-1,[ref]$m);
-  if($m.dmPelsWidth -eq 2560 -and $m.dmPelsHeight -eq 1440 -and $m.dmDisplayFrequency -eq 60){ continue }
-  $m.dmPelsWidth=2560;
-  $m.dmPelsHeight=1440;
+   if($m.dmPelsWidth -eq $targetWidth -and $m.dmPelsHeight -eq $targetHeight -and $m.dmDisplayFrequency -eq 60){ continue }
+   $m.dmPelsWidth=$targetWidth;
+   $m.dmPelsHeight=$targetHeight;
   $m.dmDisplayFrequency=60;
   $m.dmFields=$DM_PELSWIDTH -bor $DM_PELSHEIGHT -bor $DM_DISPLAYFREQUENCY;
   [void][ScftDisplayModeApi]::ChangeDisplaySettingsEx($d.DeviceName,[ref]$m,[IntPtr]::Zero,$CDS_UPDATEREGISTRY,[IntPtr]::Zero);
@@ -319,7 +377,7 @@ function getBundledBackendOutPath() {
 
 function prepareScreenStreamEncoder() {
     if (!process.env.SCFT_H264_ENCODER) {
-        process.env.SCFT_H264_ENCODER = 'h264_mf';
+        process.env.SCFT_H264_ENCODER = 'auto';
     }
 
     if (process.env.SCFT_FFMPEG_PATH && fs.existsSync(process.env.SCFT_FFMPEG_PATH)) return;

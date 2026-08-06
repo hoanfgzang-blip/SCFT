@@ -3,6 +3,7 @@
     flex-direction: column;
     gap: 20px;
     padding: 30px;
+    min-width: 0;
 }
 
 .pc-toolbar {
@@ -10,6 +11,7 @@
     justify-content: space-between;
     align-items: center;
     gap: 16px;
+    min-width: 0;
 }
 
 .pc-toolbar h1 {
@@ -27,12 +29,15 @@
     display: flex;
     gap: 10px;
     align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 .pc-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
     gap: 20px;
+    min-width: 0;
 }
 
 .pc-panel {
@@ -40,6 +45,7 @@
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 20px;
+    min-width: 0;
 }
 
 .panel-heading {
@@ -262,4 +268,20 @@
 
 .danger-btn:hover:not(:disabled) {
     background: #fff1f1;
+}
+
+@media screen and (max-width: 1200px) {
+    .pc-screen-page {
+        padding: 20px;
+    }
+
+    .pc-toolbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .pc-toolbar-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
 }

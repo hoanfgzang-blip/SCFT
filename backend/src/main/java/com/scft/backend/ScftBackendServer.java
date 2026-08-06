@@ -62,6 +62,8 @@ public final class ScftBackendServer {
     private final String deviceName;
     private final Map<String, ScreenFrame> screenFrames = new ConcurrentHashMap<>();
     private final ExecutorService screenCaptureExecutor = Executors.newSingleThreadExecutor();
+    private volatile H264ScreenStreamer activeScreenStreamer;
+    private volatile ScreenSession screenSession;
 
     private ScftBackendServer(int port, Path storageRoot) throws IOException {
         this.port = port;
@@ -158,6 +160,43 @@ public final class ScftBackendServer {
         sendJson(exchange, 200, body);
     }
 
+    private void handleScreenSessionStart(HttpExchange exchange) throws IOException {
+        Map<String, String> params = queryParams(exchange.getRequestURI());
+        int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
+        String displayId = params.getOrDefault("displayId", "");
+        String preset = normalizePreset(params.get("preset"));
+        String transport = params.getOrDefault("transport", "usb");
+        ScreenProfile profile = screenProfile(preset, "16:10");
+        ScreenSession next = new ScreenSession(
+                UUID.randomUUID().toString(), display, displayId, preset, transport,
+                profile.width, profile.height, profile.fps, profile.bitrate
+        );
+        H264ScreenStreamer previous = activeScreenStreamer;
+        activeScreenStreamer = null;
+        if (previous != null) previous.close();
+        screenSession = next;
+        sendJson(exchange, 201, next.toJson());
+    }
+
+    private void handleScreenSessionStop(HttpExchange exchange) throws IOException {
+        String requestedId = queryParams(exchange.getRequestURI()).getOrDefault("sessionId", "");
+        ScreenSession current = screenSession;
+        if (current != null && !requestedId.isBlank() && !current.sessionId.equals(requestedId)) {
+            sendJson(exchange, 409, "{\"error\":\"Screen session is no longer active\"}");
+            return;
+        }
+        H264ScreenStreamer previous = activeScreenStreamer;
+        activeScreenStreamer = null;
+        if (previous != null) previous.close();
+        screenSession = null;
+        sendJson(exchange, 200, "{\"stopped\":true}");
+    }
+
+    private String screenSessionJson() {
+        ScreenSession current = screenSession;
+        return current == null ? "null" : current.toJson();
+    }
+
     private void handleFiles(HttpExchange exchange) throws IOException {
         String method = exchange.getRequestMethod();
         String path = exchange.getRequestURI().getPath();
@@ -192,6 +231,23 @@ public final class ScftBackendServer {
     private void handleScreen(HttpExchange exchange) throws Exception {
         String method = exchange.getRequestMethod();
         String path = exchange.getRequestURI().getPath();
+
+        if ("POST".equalsIgnoreCase(method) && "/api/screen/session".equals(path)) {
+            handleScreenSessionStart(exchange);
+            return;
+        }
+        if ("DELETE".equalsIgnoreCase(method) && "/api/screen/session".equals(path)) {
+            handleScreenSessionStop(exchange);
+            return;
+        }
+        if ("GET".equalsIgnoreCase(method) && "/api/screen/session".equals(path)) {
+            sendJson(exchange, 200, screenSessionJson());
+            return;
+        }
+        if ("POST".equalsIgnoreCase(method) && "/api/screen/telemetry".equals(path)) {
+            handleScreenTelemetry(exchange);
+            return;
+        }
 
         if (!"GET".equalsIgnoreCase(method)) {
             sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
@@ -244,6 +300,7 @@ public final class ScftBackendServer {
                     }
                     screens.append("{\"index\":").append(index)
                             .append(",\"id\":\"").append(json(devices[index].getIDstring())).append("\"")
+                            .append(",\"name\":\"").append(json(devices[index].getIDstring())).append("\"")
                             .append(",\"width\":").append(bounds.width)
                             .append(",\"height\":").append(bounds.height)
                             .append("}");
@@ -265,6 +322,8 @@ public final class ScftBackendServer {
                 + "\"viewUrl\":\"/api/screen/view\","
                 + "\"frameUrl\":\"/api/screen/frame\","
                 + "\"streamUrl\":\"/api/screen/stream\","
+                + "\"presets\":[{\"id\":\"zero_latency\",\"label\":\"Kh\u00f4ng \u0111\u1ed9 tr\u1ec5\"},{\"id\":\"balanced\",\"label\":\"C\u00e2n b\u1eb1ng\"},{\"id\":\"adaptive_2k\",\"label\":\"2K\"}],"
+                + "\"session\":" + screenSessionJson() + ","
                 + "\"error\":\"" + json(error) + "\""
                 + "}";
         sendJson(exchange, 200, body);
@@ -298,12 +357,34 @@ public final class ScftBackendServer {
     private void handleScreenStream(HttpExchange exchange) throws IOException, AWTException {
         Map<String, String> params = queryParams(exchange.getRequestURI());
         int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
-        int fps = clampInt(params.get("fps"), 15, 60, 30);
+        String displayId = params.getOrDefault("displayId", "");
+        String aspect = params.getOrDefault("aspect", "16:9");
+        String sessionId = params.getOrDefault("sessionId", "");
+        ScreenSession currentSession = screenSession;
+        if (currentSession != null && !currentSession.sessionId.equals(sessionId)) {
+            sendJson(exchange, 409, "{\"error\":\"Screen session is stale\"}");
+            return;
+        }
+        ScreenProfile profile = currentSession == null
+                ? screenProfile(params.get("preset"), aspect)
+                : new ScreenProfile(currentSession.width, currentSession.height, currentSession.targetFps, currentSession.bitrate);
+        if (currentSession != null) {
+            display = currentSession.displayIndex;
+            displayId = currentSession.displayId;
+            aspect = "16:10";
+        }
+        int fps = currentSession == null ? clampInt(params.get("fps"), 15, 60, profile.fps) : profile.fps;
         String format = "h264".equalsIgnoreCase(params.get("format")) ? "h264" : "mpegts";
-        String bitrate = params.get("bitrate");
-        int targetWidth = clampInt(params.get("width"), 0, 3840, 0);
-        int targetHeight = clampInt(params.get("height"), 0, 2160, 0);
-        H264ScreenStreamer streamer = new H264ScreenStreamer(display, fps, format, bitrate, targetWidth, targetHeight);
+        String bitrate = currentSession == null && params.containsKey("bitrate") ? params.get("bitrate") : profile.bitrate;
+        int targetWidth = currentSession == null && params.containsKey("width")
+                ? clampInt(params.get("width"), 0, 3840, profile.width) : profile.width;
+        int targetHeight = currentSession == null && params.containsKey("height")
+                ? clampInt(params.get("height"), 0, 2160, profile.height) : profile.height;
+        H264ScreenStreamer streamer = new H264ScreenStreamer(display, displayId, fps, format, bitrate, targetWidth, targetHeight);
+        H264ScreenStreamer previous = activeScreenStreamer;
+        activeScreenStreamer = streamer;
+        if (previous != null) previous.close();
+        if (currentSession != null) currentSession.state = "connecting";
         Headers headers = exchange.getResponseHeaders();
         headers.set("Content-Type", "h264".equals(format) ? "video/h264" : "video/mp2t");
         headers.set("Cache-Control", "no-store");
@@ -312,7 +393,30 @@ public final class ScftBackendServer {
             streamer.stream(output);
         } finally {
             streamer.close();
+            if (activeScreenStreamer == streamer) activeScreenStreamer = null;
         }
+    }
+
+    private void handleScreenTelemetry(HttpExchange exchange) throws IOException {
+        Map<String, String> params = queryParams(exchange.getRequestURI());
+        String sessionId = params.getOrDefault("sessionId", "");
+        int fps = clampInt(params.get("fps"), 0, 120, 0);
+        int dropped = clampInt(params.get("dropped"), 0, Integer.MAX_VALUE, 0);
+        int queue = clampInt(params.get("queue"), 0, Integer.MAX_VALUE, 0);
+        long rtt = clampLong(params.get("rtt"), -1L, 60000L, -1L);
+        String state = params.getOrDefault("state", "streaming");
+        ScreenSession current = screenSession;
+        if (current != null && current.sessionId.equals(sessionId)) {
+            current.updateTelemetry(state, fps, dropped, queue, rtt);
+        }
+        String preset = params.getOrDefault("preset", "balanced");
+        String recommendation = "keep";
+        if ("adaptive_2k".equals(preset)) {
+            if (fps > 0 && fps < 40 || dropped > 3) recommendation = "reconnect_30";
+            else if (fps > 0 && fps < 52 || dropped > 1) recommendation = "reconnect_45";
+            else if (fps >= 57 && dropped == 0) recommendation = "keep_60";
+        }
+        sendJson(exchange, 200, "{\"action\":\"" + recommendation + "\"}");
     }
 
     private void handleScreenLatency(HttpExchange exchange) throws IOException {
@@ -598,6 +702,35 @@ public final class ScftBackendServer {
             return fallback;
         }
     }
+
+    private static long clampLong(String raw, long min, long max, long fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            long value = Long.parseLong(raw);
+            return Math.max(min, Math.min(max, value));
+        } catch (NumberFormatException error) {
+            return fallback;
+        }
+    }
+
+    private static ScreenProfile screenProfile(String preset, String aspect) {
+        boolean wide = "16:10".equalsIgnoreCase(aspect) || "10:16".equalsIgnoreCase(aspect);
+        if ("zero_latency".equalsIgnoreCase(preset)) {
+            return wide ? new ScreenProfile(1280, 800, 60, "5M") : new ScreenProfile(1280, 720, 60, "5M");
+        }
+        if ("adaptive_2k".equalsIgnoreCase(preset) || "2k".equalsIgnoreCase(preset)) {
+            return wide ? new ScreenProfile(2048, 1280, 30, "16M") : new ScreenProfile(2048, 1152, 30, "16M");
+        }
+        return wide ? new ScreenProfile(1920, 1200, 50, "10M") : new ScreenProfile(1920, 1080, 50, "10M");
+    }
+
+    private static String normalizePreset(String value) {
+        if ("zero_latency".equalsIgnoreCase(value)) return "zero_latency";
+        if ("adaptive_2k".equalsIgnoreCase(value) || "2k".equalsIgnoreCase(value)) return "adaptive_2k";
+        return "balanced";
+    }
     private static void validateContentLength(HttpExchange exchange) {
         String value = getHeader(exchange, "Content-Length");
         if (value == null || value.isBlank()) {
@@ -761,6 +894,84 @@ public final class ScftBackendServer {
         private volatile long sourceUpdatedAt;
         private boolean refreshing;
     }
+
+    private static final class ScreenProfile {
+        private final int width;
+        private final int height;
+        private final int fps;
+        private final String bitrate;
+
+        private ScreenProfile(int width, int height, int fps, String bitrate) {
+            this.width = width;
+            this.height = height;
+            this.fps = fps;
+            this.bitrate = bitrate;
+        }
+    }
+
+    private static final class ScreenSession {
+        private final String sessionId;
+        private final int displayIndex;
+        private final String displayId;
+        private final String presetId;
+        private final String transport;
+        private final int width;
+        private final int height;
+        private final int targetFps;
+        private final String bitrate;
+        private volatile String state = "applying";
+        private volatile int fps;
+        private volatile int dropped;
+        private volatile int queue;
+        private volatile long rtt = -1L;
+        private volatile long firstFrameAt;
+
+        private ScreenSession(String sessionId, int displayIndex, String displayId, String presetId,
+                String transport, int width, int height, int targetFps, String bitrate) {
+            this.sessionId = sessionId;
+            this.displayIndex = displayIndex;
+            this.displayId = displayId;
+            this.presetId = presetId;
+            this.transport = transport;
+            this.width = width;
+            this.height = height;
+            this.targetFps = targetFps;
+            this.bitrate = bitrate;
+        }
+
+        private void updateTelemetry(String nextState, int nextFps, int nextDropped, int nextQueue, long nextRtt) {
+            if (nextState != null && !nextState.isBlank()) state = nextState;
+            fps = nextFps;
+            dropped = nextDropped;
+            queue = nextQueue;
+            rtt = nextRtt;
+            if ("streaming".equals(state) && firstFrameAt == 0L) firstFrameAt = System.currentTimeMillis();
+        }
+
+        private String toJson() {
+            return "{"
+                    + "\"sessionId\":\"" + json(sessionId) + "\","
+                    + "\"state\":\"" + json(state) + "\","
+                    + "\"transport\":\"" + json(transport) + "\","
+                    + "\"config\":{"
+                    + "\"displayIndex\":" + displayIndex + ","
+                    + "\"displayId\":\"" + json(displayId) + "\","
+                    + "\"presetId\":\"" + json(presetId) + "\","
+                    + "\"width\":" + width + ","
+                    + "\"height\":" + height + ","
+                    + "\"targetFps\":" + targetFps + ","
+                    + "\"bitrate\":\"" + json(bitrate) + "\"},"
+                    + "\"metrics\":{"
+                    + "\"fps\":" + fps + ","
+                    + "\"dropped\":" + dropped + ","
+                    + "\"queue\":" + queue + ","
+                    + "\"rtt\":" + rtt + ","
+                    + "\"firstFrameAt\":" + firstFrameAt
+                    + "}"
+                    + "}";
+        }
+    }
+
     private static final class NotFoundException extends RuntimeException {
         private NotFoundException(String message) {
             super(message);

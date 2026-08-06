@@ -28,7 +28,13 @@ $classFile = Join-Path $OutDir "com/scft/backend/ScftBackendServer.class"
 $targetClassMajor = 55 # Java 11; also runs on every newer bundled runtime.
 
 if (-not $javac -or -not $java) {
-    $jdkBin = Get-ChildItem -Path "C:\Program Files\Java" -Recurse -Filter javac.exe -ErrorAction SilentlyContinue |
+    $jdkRoots = @(
+        $env:JAVA_HOME,
+        "C:\Program Files\Java",
+        "C:\Program Files\Android\Android Studio\jbr"
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+    $jdkBin = $jdkRoots |
+        ForEach-Object { Get-ChildItem -Path $_ -Recurse -Filter javac.exe -ErrorAction SilentlyContinue } |
         Sort-Object FullName -Descending |
         Select-Object -First 1 |
         ForEach-Object { $_.Directory.FullName }
@@ -83,5 +89,14 @@ if (-not (Test-Path $classFile)) {
     throw "Java backend class not found. Rebuild the app before running."
 }
 
-$javaPath = if ($java.FullName) { $java.FullName } else { $java.Source }
+$javaPath = if ($java -is [System.IO.FileInfo]) {
+    $java.FullName
+} elseif ($java.Source) {
+    $java.Source
+} else {
+    [string]$java
+}
+if (-not $javaPath -or -not (Test-Path -LiteralPath $javaPath)) {
+    throw "Java runtime path is invalid: $javaPath"
+}
 & $javaPath -cp $OutDir com.scft.backend.ScftBackendServer --port $Port --storage $Storage

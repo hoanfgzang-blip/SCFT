@@ -30,7 +30,7 @@
                     <div class="pc-panel preview-panel">
                         <div class="panel-heading">
                             <h2>Xem trước màn hình PC</h2>
-                            <span id="frame_status_text">Chờ</span>
+                        <span id="frame_status_text">Chờ</span>
                         </div>
                         <div class="desktop-preview">
                             <img id="desktop_preview_img" alt="Xem trước màn hình PC">
@@ -62,6 +62,14 @@
                                 </select>
                             </div>
                             <div>
+                                <span>Chế độ truyền</span>
+                                <select id="preset_select">
+                                    <option value="zero_latency">Không độ trễ</option>
+                                    <option value="balanced" selected>Cân bằng</option>
+                                    <option value="adaptive_2k">2K</option>
+                                </select>
+                            </div>
+                            <div>
                                 <span>Số màn hình</span>
                                 <strong id="display_count_text">-</strong>
                             </div>
@@ -69,7 +77,7 @@
 
                         <div class="guide-box">
                             <strong>Chế độ USB</strong>
-                            <span>Kết nối điện thoại bằng cáp dữ liệu, bật gỡ lỗi USB và chấp nhận thông báo cấp quyền. Sau đó nhấn Mở trên điện thoại.</span>
+                            <span>Kết nối điện thoại bằng cáp dữ liệu, bật gỡ lỗi USB và chấp nhận quyền lần đầu. Sau đó chọn chế độ và bấm Bắt đầu trên PC; điện thoại sẽ tự mở và tự phát hình.</span>
                         </div>
 
                         <div class="guide-box">

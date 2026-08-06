@@ -3,6 +3,7 @@ package com.example.myapplication
 import android.R
 import android.content.Context
 import android.content.ContentValues
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -87,31 +88,42 @@ private val AppWarning = Color(0xFFAA5A00)
 private val AppWarningSoft = Color(0xFFFFEFD9)
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    private fun renderIntent(source: Intent) {
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
                 ScftApp(
-                    initialScreen = intent.getStringExtra("scft_screen"),
-                    // PC Screen is intended for the secondary monitor. If the app is
-                    // opened manually over LAN, default to display index 1; the backend
-                    // safely falls back to index 0 when no secondary display exists.
-                    initialDisplay = intent.getIntExtra("scft_display", 1),
-                    initialBaseUrl = intent.getStringExtra("scft_base_url") ?: "http://127.0.0.1:7878",
+                    initialScreen = source.getStringExtra("scft_screen"),
+                    initialDisplay = source.getIntExtra("scft_display", 1),
+                    initialDisplayId = source.getStringExtra("scft_display_id") ?: "",
+                    initialBaseUrl = source.getStringExtra("scft_base_url") ?: "http://127.0.0.1:7878",
+                    initialPresetId = source.getStringExtra("scft_preset"),
+                    initialSessionId = source.getStringExtra("scft_session_id") ?: "",
+                    autoStart = source.getBooleanExtra("scft_autostart", false),
                     modifier = Modifier.fillMaxSize()
                 )
             }
         }
     }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        renderIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        renderIntent(intent)
+    }
 }
 
 @Composable
-fun ScftApp(initialScreen: String?, initialDisplay: Int, initialBaseUrl: String, modifier: Modifier = Modifier) {
+fun ScftApp(initialScreen: String?, initialDisplay: Int, initialDisplayId: String, initialBaseUrl: String, initialPresetId: String?, initialSessionId: String, autoStart: Boolean, modifier: Modifier = Modifier) {
     var currentScreen by rememberSaveable { mutableStateOf(if (initialScreen == "pc") "pc" else "transfer") }
 
     if (currentScreen == "pc") {
-        PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, baseUrl = initialBaseUrl, onBack = { currentScreen = "transfer" })
+        PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, displayId = initialDisplayId, baseUrl = initialBaseUrl, initialPresetId = initialPresetId, sessionId = initialSessionId, autoStart = autoStart, onBack = { currentScreen = "transfer" })
         return
     }
 

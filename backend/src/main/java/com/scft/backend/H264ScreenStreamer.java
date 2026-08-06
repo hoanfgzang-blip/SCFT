@@ -15,10 +15,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 
 final class H264ScreenStreamer implements AutoCloseable {
     private static final Path VIRTUAL_DISPLAY_FRAME_PATH = Path.of(System.getenv().getOrDefault("ProgramData", "C:\\ProgramData"), "SCFT", "virtual-display-frame.bmp");
+    private static volatile String detectedEncoder;
     private final int display;
+    private final String displayId;
     private final int fps;
     private final String format;
     private final String bitrate;
@@ -27,8 +30,9 @@ final class H264ScreenStreamer implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile Process process;
 
-    H264ScreenStreamer(int display, int fps, String format, String bitrate, int targetWidth, int targetHeight) {
+    H264ScreenStreamer(int display, String displayId, int fps, String format, String bitrate, int targetWidth, int targetHeight) {
         this.display = display;
+        this.displayId = displayId == null ? "" : displayId.trim();
         this.fps = fps;
         this.format = format;
         this.bitrate = sanitizeBitrate(bitrate);
@@ -49,9 +53,9 @@ final class H264ScreenStreamer implements AutoCloseable {
     }
 
     private Process startDesktopEncoder() throws IOException {
-        Rectangle bounds = screenBounds(display);
+        Rectangle bounds = screenBounds(display, displayId);
         List<String> command = encoderBase();
-        command.addAll(List.of("-f", "gdigrab", "-draw_mouse", "1", "-framerate", Integer.toString(fps), "-offset_x", Integer.toString(bounds.x), "-offset_y", Integer.toString(bounds.y), "-video_size", bounds.width + "x" + bounds.height, "-i", "desktop"));
+        command.addAll(List.of("-fflags", "nobuffer", "-f", "gdigrab", "-draw_mouse", "1", "-framerate", Integer.toString(fps), "-offset_x", Integer.toString(bounds.x), "-offset_y", Integer.toString(bounds.y), "-video_size", bounds.width + "x" + bounds.height, "-i", "desktop"));
         appendEncoderOutput(command);
         return start(command);
     }
@@ -74,7 +78,7 @@ final class H264ScreenStreamer implements AutoCloseable {
 
     private Process startFramePipeEncoder(int width, int height, String pixelFormat) throws IOException {
         List<String> command = encoderBase();
-        command.addAll(List.of("-f", "rawvideo", "-pixel_format", pixelFormat, "-video_size", width + "x" + height, "-framerate", Integer.toString(fps), "-i", "pipe:0"));
+        command.addAll(List.of("-fflags", "nobuffer", "-f", "rawvideo", "-pixel_format", pixelFormat, "-video_size", width + "x" + height, "-framerate", Integer.toString(fps), "-i", "pipe:0"));
         appendEncoderOutput(command);
         return start(command);
     }
@@ -105,7 +109,7 @@ final class H264ScreenStreamer implements AutoCloseable {
     }
 
     private void appendEncoderOutput(List<String> command) {
-        String encoder = System.getenv().getOrDefault("SCFT_H264_ENCODER", "h264_mf");
+        String encoder = resolveH264Encoder();
         List<String> filters = new ArrayList<>();
         if (targetWidth > 0 && targetHeight > 0) {
             filters.add("scale=" + targetWidth + ":" + targetHeight + ":flags=fast_bilinear");
@@ -124,11 +128,43 @@ final class H264ScreenStreamer implements AutoCloseable {
         } else {
             command.addAll(List.of("-preset", "ultrafast", "-tune", "zerolatency", "-g", Integer.toString(keyframeInterval()), "-bf", "0", "-b:v", bitrate));
         }
-        command.addAll(List.of("-flush_packets", "1"));
+        command.addAll(List.of("-flush_packets", "1", "-flags", "low_delay"));
         if ("h264".equalsIgnoreCase(format)) {
-            command.addAll(List.of("-f", "h264", "pipe:1"));
+            command.addAll(List.of("-bsf:v", "h264_metadata=aud=insert", "-flags", "low_delay", "-f", "h264", "pipe:1"));
         } else {
             command.addAll(List.of("-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", "-mpegts_flags", "+resend_headers", "pipe:1"));
+        }
+    }
+
+    private static String resolveH264Encoder() {
+        String configured = System.getenv("SCFT_H264_ENCODER");
+        if (configured != null && !configured.isBlank() && !"auto".equalsIgnoreCase(configured)) {
+            return configured.trim();
+        }
+        String cached = detectedEncoder;
+        if (cached != null) return cached;
+        synchronized (H264ScreenStreamer.class) {
+            if (detectedEncoder != null) return detectedEncoder;
+            String executable = resolveFfmpegExecutable();
+            try {
+                Process probe = new ProcessBuilder(executable, "-hide_banner", "-encoders")
+                        .redirectErrorStream(true)
+                        .start();
+                byte[] output = probe.getInputStream().readAllBytes();
+                boolean completed = probe.waitFor(2, TimeUnit.SECONDS);
+                String listing = new String(output, java.nio.charset.StandardCharsets.UTF_8);
+                if (completed && probe.exitValue() == 0) {
+                    for (String candidate : List.of("h264_mf", "h264_qsv", "h264_nvenc", "libx264")) {
+                        if (listing.contains(" " + candidate) || listing.contains("\\t" + candidate)) {
+                            detectedEncoder = candidate;
+                            return candidate;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            detectedEncoder = "libx264";
+            return detectedEncoder;
         }
     }
 
@@ -174,7 +210,7 @@ final class H264ScreenStreamer implements AutoCloseable {
             return virtualFrame;
         }
 
-        Rectangle bounds = screenBounds(display);
+        Rectangle bounds = screenBounds(display, displayId);
         BufferedImage source = new Robot().createScreenCapture(bounds);
         BufferedImage bgr = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_3BYTE_BGR);
         Graphics2D graphics = bgr.createGraphics();
@@ -220,10 +256,18 @@ final class H264ScreenStreamer implements AutoCloseable {
         return new RawFrame(width, height, "bgra", topDown, 0, topDown.length);
     }
 
-    private static Rectangle screenBounds(int display) {
+    private static Rectangle screenBounds(int display, String displayId) {
         GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
         if (devices.length == 0) {
             throw new IllegalStateException("No display is available");
+        }
+        if (displayId != null && !displayId.isBlank()) {
+            for (GraphicsDevice device : devices) {
+                if (displayId.equalsIgnoreCase(device.getIDstring())) {
+                    return device.getDefaultConfiguration().getBounds();
+                }
+            }
+            throw new IllegalArgumentException("Display is no longer available: " + displayId);
         }
         int index = Math.min(Math.max(display, 0), devices.length - 1);
         return devices[index].getDefaultConfiguration().getBounds();
