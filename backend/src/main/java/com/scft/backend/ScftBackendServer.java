@@ -94,6 +94,8 @@ public final class ScftBackendServer {
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
 
+        Server.startInThread(10789);
+
         System.out.println("SCFT backend running at http://localhost:" + port);
         System.out.println("Uploads stored in " + uploadDir);
     }

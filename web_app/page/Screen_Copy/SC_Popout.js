@@ -1,6 +1,8 @@
 const { execFile, spawn } = require("child_process");
 const path = require("path");
 const os = require("os");
+const fs = require("fs");
+const net = require("net");
 
 const RESOLUTION_MAP = {
     "720p": "720x1280",
@@ -13,8 +15,31 @@ const state = {
     adbPath: null,
     adbProcess: null,
     decoder: null,
-    running: false
+    running: false,
+    controller: null
 };
+
+let rotationInterval = null;
+let currentRotation = null;
+let controlSocket = null;
+let javaServerProcess = null;
+let audioManager = null;
+
+function getAudioManager() {
+    if (!audioManager) {
+        if (typeof SCAudioManager !== "undefined") {
+            audioManager = new SCAudioManager();
+        } else {
+            try {
+                const { SCAudioManager: Manager } = require("./SCAudio.js");
+                audioManager = new Manager();
+            } catch (e) {
+                console.warn("SCAudioManager could not be loaded:", e);
+            }
+        }
+    }
+    return audioManager;
+}
 
 document.addEventListener("DOMContentLoaded", () => {
     const params = new URLSearchParams(window.location.search);
@@ -99,12 +124,181 @@ function findAdb() {
                 }
 
                 state.adbPath = command;
+                process.env.SCFT_ADB_PATH = command;
                 resolve(command);
             });
         }
 
         tryCandidate(0);
     });
+}
+
+function runAdb(args) {
+    return new Promise((resolve, reject) => {
+        findAdb().then((command) => {
+            execFile(command, args, { windowsHide: true }, (err, stdout, stderr) => {
+                if (err) reject(err);
+                else resolve({ stdout, stderr, command });
+            });
+        }).catch(reject);
+    });
+}
+
+async function ensureControlServer() {
+    if (controlSocket && !controlSocket.destroyed) {
+        return controlSocket;
+    }
+
+    return new Promise((resolve) => {
+        const client = net.createConnection({ port: 10789, host: "127.0.0.1" }, () => {
+            controlSocket = client;
+            resolve(controlSocket);
+        });
+        client.on("error", () => {
+            resolve(null);
+        });
+    });
+}
+
+let adbShellProcess = null;
+
+function getAdbShell() {
+    if (adbShellProcess && !adbShellProcess.killed && adbShellProcess.stdin && adbShellProcess.stdin.writable) {
+        return adbShellProcess;
+    }
+    const candidates = state.adbPath ? [state.adbPath] : getAdbCandidates();
+    for (const cmd of candidates) {
+        try {
+            if (fs.existsSync(cmd) || cmd === "adb") {
+                adbShellProcess = spawn(cmd, ["shell"], { windowsHide: true });
+                adbShellProcess.on("error", () => { adbShellProcess = null; });
+                adbShellProcess.on("exit", () => { adbShellProcess = null; });
+                state.adbPath = cmd;
+                process.env.SCFT_ADB_PATH = cmd;
+                return adbShellProcess;
+            }
+        } catch (e) {}
+    }
+    return null;
+}
+
+function sendAdbShellCommand(cmdStr) {
+    const proc = getAdbShell();
+    if (proc && proc.stdin && proc.stdin.writable) {
+        proc.stdin.write(cmdStr + "\n");
+    }
+}
+
+function sendSocketCommand(cmdStr) {
+    const parts = cmdStr.trim().split(" ");
+    const type = parts[0];
+
+    // 1. Write directly to Java Socket server if connected
+    if (controlSocket && !controlSocket.destroyed) {
+        try {
+            controlSocket.write(cmdStr + "\n");
+            return;
+        } catch (e) {}
+    }
+
+    // 2. Fallback to native cmd input via persistent ADB shell pipe instantly
+    if (type === "DOWN") {
+        sendAdbShellCommand(`cmd input motionevent DOWN ${parts[1]} ${parts[2]}`);
+    } else if (type === "MOVE") {
+        sendAdbShellCommand(`cmd input motionevent MOVE ${parts[1]} ${parts[2]}`);
+    } else if (type === "UP") {
+        sendAdbShellCommand(`cmd input motionevent UP ${parts[1]} ${parts[2]}`);
+    } else if (type === "SCROLL" && parts.length >= 4) {
+        sendAdbShellCommand(`cmd input mouse scroll ${parts[1]} ${parts[2]} --axis VSCROLL,${parts[3]}`);
+    } else if (type === "TAP") {
+        sendAdbShellCommand(`cmd input tap ${parts[1]} ${parts[2]}`);
+    } else if (type === "KEY") {
+        sendAdbShellCommand(`cmd input keyevent ${parts[1]}`);
+    } else if (type === "TEXT") {
+        sendAdbShellCommand(`cmd input text ${cmdStr.substring(5)}`);
+    }
+
+    ensureControlServer().catch(() => {});
+}
+
+function stopControlServer() {
+    if (controlSocket) {
+        try { controlSocket.destroy(); } catch (e) {}
+        controlSocket = null;
+    }
+    if (adbShellProcess) {
+        try {
+            adbShellProcess.stdin.end();
+            adbShellProcess.kill();
+        } catch (e) {}
+        adbShellProcess = null;
+    }
+}
+
+async function getDeviceRotation() {
+    try {
+        const result = await new Promise((resolve) => {
+            execFile(state.adbPath || "adb", ["shell", "dumpsys", "input"], { windowsHide: true }, (err, stdout) => {
+                if (err) resolve(null);
+                else resolve(stdout);
+            });
+        });
+        if (result) {
+            const match = result.match(/SurfaceOrientation:\s*(\d)/);
+            if (match) return match[1];
+        }
+    } catch (e) {}
+
+    try {
+        const result = await new Promise((resolve) => {
+            execFile(state.adbPath || "adb", ["shell", "dumpsys", "window", "displays"], { windowsHide: true }, (err, stdout) => {
+                if (err) resolve(null);
+                else resolve(stdout);
+            });
+        });
+        if (result) {
+            const match = result.match(/mCurrentRotation=ROTATION_(\d+)/);
+            if (match) {
+                return match[1] === "0" ? "0" : match[1] === "90" ? "1" : match[1] === "180" ? "2" : "3";
+            }
+        }
+    } catch (e) {}
+    
+    return null;
+}
+
+function startRotationPolling() {
+    stopRotationPolling();
+    getDeviceRotation().then(rot => {
+        currentRotation = rot;
+    });
+
+    rotationInterval = setInterval(async () => {
+        if (!state.running) {
+            stopRotationPolling();
+            return;
+        }
+
+        const newRot = await getDeviceRotation();
+        if (newRot !== null && currentRotation !== null && newRot !== currentRotation) {
+            currentRotation = newRot;
+            console.log("Device rotation changed to", newRot, "- restarting stream");
+            
+            stopStream();
+            setTimeout(() => {
+                startStream();
+            }, 600);
+        } else if (newRot !== null) {
+            currentRotation = newRot;
+        }
+    }, 1500);
+}
+
+function stopRotationPolling() {
+    if (rotationInterval) {
+        clearInterval(rotationInterval);
+        rotationInterval = null;
+    }
 }
 
 async function startStream() {
@@ -136,11 +330,18 @@ async function startStream() {
         }
     });
 
+    startRotationPolling();
+
+    if (!state.controller && canvas) {
+        state.controller = new SCController(canvas, (cmdStr) => sendSocketCommand(cmdStr));
+    } else if (state.controller) {
+        state.controller.setEnabled(true);
+    }
+
     const spawnArgs = [
         "exec-out",
         "screenrecord",
         "--output-format=h264",
-        "--size", settings.resolution,
         "--bit-rate", settings.bitrate,
         "--time-limit", "1800",
         "-"
@@ -171,6 +372,14 @@ async function startStream() {
                 state.running = false;
             }
         });
+
+        try {
+            getAudioManager()?.startAudioShare(runAdb).catch((err) => {
+                console.warn("[Popout] Audio share background error:", err);
+            });
+        } catch (audioErr) {
+            console.warn("[Popout] Audio share sync error:", audioErr);
+        }
     } catch (err) {
         statsEl.textContent = "Failed to start: " + err.message;
     }
@@ -178,6 +387,9 @@ async function startStream() {
 
 function stopStream() {
     state.running = false;
+    stopRotationPolling();
+    stopControlServer();
+    getAudioManager()?.stopAudioShare(runAdb);
 
     if (state.adbProcess) {
         try {
@@ -191,5 +403,12 @@ function stopStream() {
     if (state.decoder) {
         state.decoder.destroy();
         state.decoder = null;
+    }
+
+    const canvas = document.getElementById("popout_canvas");
+    if (canvas) {
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 }

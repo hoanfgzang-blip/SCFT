@@ -26,6 +26,7 @@
                         <button id="refresh_device_btn" class="secondary-btn" type="button">Refresh</button>
                         <button id="start_preview_btn" class="primary-btn" type="button">Start</button>
                         <button id="stop_preview_btn" class="secondary-btn" type="button" disabled>Stop</button>
+                        <button id="controller_toggle_btn" class="secondary-btn" type="button" title="Toggle Mouse & Keyboard Control">🎮 Control: ON</button>
                         <button id="popout_btn" class="secondary-btn" type="button" title="Open in floating window">⧉ Pop Out</button>
                     </div>
                 </section>
@@ -77,6 +78,10 @@
                                 <strong id="sc_orientation_text">-</strong>
                             </div>
                             <div>
+                                <span>Audio Share</span>
+                                <strong id="sc_audio_status_text">Tắt</strong>
+                            </div>
+                            <div>
                                 <span>Transport</span>
                                 <strong>USB ADB H.264 Hardware Stream (WebCodecs)</strong>
                             </div>
@@ -92,6 +97,8 @@
 
     <script src="./Share/LoadComponent.js"></script>
     <script src="./page/Screen_Copy/h264_stream_decoder.js"></script>
+    <script src="./page/Screen_Copy/SC_Controller.js"></script>
+    <script src="./page/Screen_Copy/SCAudio.js"></script>
     <script src="./page/Screen_Copy/SC.js"></script>
 </body>
 </html>

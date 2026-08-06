@@ -26,6 +26,8 @@ body {
     max-width: 100vw;
     max-height: 100vh;
     object-fit: contain;
+    cursor: pointer;
+    outline: none;
 }
 
 .popout-container.has-frame canvas {

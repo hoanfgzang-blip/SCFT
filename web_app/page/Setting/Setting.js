@@ -126,6 +126,18 @@ document.addEventListener("DOMContentLoaded", () => {
         localSaver('SCFT_Volume', currentVal);
     });
 
+    // Xử lý Audio Share
+    const audioShareRadios = document.querySelectorAll('input[name="audio_share"]');
+    const savedAudioShare = localLoader('SCFT_AudioShare', 'true');
+    audioShareRadios.forEach(radio => {
+        if (radio.value === savedAudioShare) {
+            radio.checked = true;
+        }
+        radio.addEventListener('change', (e) => {
+            localSaver('SCFT_AudioShare', e.target.value);
+        });
+    });
+
 
     // ----------------------------------------
     // KHỐI 3: STREAM PERFORMANCE
