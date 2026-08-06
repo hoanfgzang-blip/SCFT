@@ -87,13 +87,14 @@ body.dark-mode .sideBar_footer img {
 
 @media screen and (max-width: 900px) {
     .sideBar_container {
-        width: 80px; 
+        width: 70px; 
         padding: 20px 10px;
     }
 
     .logoName {
         padding: 0;
         text-align: center;
+        justify-content: center;
     }
 
     .logoName p,

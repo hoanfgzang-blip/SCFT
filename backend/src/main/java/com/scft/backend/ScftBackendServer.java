@@ -1,15 +1,5 @@
 package com.scft.backend;
 
-import com.sun.net.httpserver.Headers;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
-
-import javax.imageio.IIOImage;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageWriteParam;
-import javax.imageio.ImageWriter;
-import javax.imageio.stream.ImageOutputStream;
 import java.awt.AWTException;
 import java.awt.Graphics2D;
 import java.awt.GraphicsDevice;
@@ -46,6 +36,17 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
+
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+
 public final class ScftBackendServer {
     private static final int DEFAULT_PORT = 7878;
     private static final int BUFFER_SIZE = 64 * 1024;
@@ -56,6 +57,7 @@ public final class ScftBackendServer {
 
     private final int port;
     private final Path uploadDir;
+    private final Path metadataDir;
     private final String deviceId;
     private final String deviceName;
     private final Map<String, ScreenFrame> screenFrames = new ConcurrentHashMap<>();
@@ -63,10 +65,18 @@ public final class ScftBackendServer {
 
     private ScftBackendServer(int port, Path storageRoot) throws IOException {
         this.port = port;
-        this.uploadDir = storageRoot.resolve("uploads").toAbsolutePath().normalize();
+        this.uploadDir = Paths
+        .get(System.getProperty("user.home"), "Downloads")
+        .toAbsolutePath()
+        .normalize();
+        this.metadataDir = storageRoot
+        .resolve("uploads")
+        .toAbsolutePath()
+        .normalize();
         this.deviceId = getOrCreateDeviceId(storageRoot);
         this.deviceName = System.getProperty("user.name", "SCFT Desktop");
         Files.createDirectories(uploadDir);
+        Files.createDirectories(metadataDir);
     }
 
     public static void main(String[] args) throws IOException {
@@ -324,8 +334,8 @@ public final class ScftBackendServer {
     }
     private void handleListFiles(HttpExchange exchange) throws IOException {
         List<FileRecord> records = new ArrayList<>();
-        if (Files.exists(uploadDir)) {
-            try (Stream<Path> stream = Files.list(uploadDir)) {
+        if (Files.exists(metadataDir) && Files.isDirectory(metadataDir)) {
+            try (Stream<Path> stream = Files.list(metadataDir)) {
                 stream.filter(path -> path.getFileName().toString().endsWith(".meta.json"))
                         .forEach(path -> {
                             try {
@@ -641,7 +651,7 @@ public final class ScftBackendServer {
     }
 
     private Path metaPath(String id) {
-        return uploadDir.resolve(id + ".meta.json").normalize();
+        return metadataDir.resolve(id + ".meta.json").normalize();
     }
 
     private void writeRecord(FileRecord record) throws IOException {
@@ -649,7 +659,7 @@ public final class ScftBackendServer {
     }
 
     private FileRecord readRecord(Path path) throws IOException {
-        if (!path.startsWith(uploadDir) || !Files.exists(path)) {
+        if (!path.startsWith(metadataDir) || !Files.exists(path)) {
             throw new NotFoundException("File not found");
         }
         return FileRecord.fromJson(Files.readString(path, StandardCharsets.UTF_8));
