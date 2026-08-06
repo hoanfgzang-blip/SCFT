@@ -77,9 +77,12 @@
                 </section>
 
                 <section class="ft-panel files-panel">
-                    <div class="panel-heading">
+                    <div class="panel-heading files-panel-heading">
                         <h2>Received Files</h2>
-                        <span id="file_count_text">0 files</span>
+                        <div class="files-panel-actions">
+                            <span id="file_count_text">0 files</span>
+                            <button id="refresh_received_files_btn" class="secondary-btn" type="button">Refresh</button>
+                        </div>
                     </div>
 
                     <div id="empty_files" class="empty-state">
@@ -94,6 +97,7 @@
                                     <th>Size</th>
                                     <th>Sender</th>
                                     <th>Uploaded</th>
+                                    <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="files_tbody"></tbody>
@@ -107,5 +111,7 @@
 
     <script src="./Share/LoadComponent.js"></script>
     <script src="./page/File_Transfer/FT.js"></script>
+
+    <div id="toast_notification" class="toast-notification" role="status" aria-live="polite"></div>
 </body>
 </html>

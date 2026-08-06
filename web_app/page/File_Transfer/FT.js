@@ -3,6 +3,7 @@ const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
 let selectedFile = null;
 let backendOnline = false;
+let toastTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
     const fileInput = document.getElementById("file_input");
@@ -10,6 +11,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const uploadBtn = document.getElementById("upload_btn");
     const clearBtn = document.getElementById("clear_file_btn");
     const refreshBtn = document.getElementById("refresh_files_btn");
+    const receivedRefreshBtn = document.getElementById("refresh_received_files_btn");
     const backendBtn = document.getElementById("open_backend_btn");
 
     fileInput.addEventListener("change", event => {
@@ -34,6 +36,7 @@ document.addEventListener("DOMContentLoaded", () => {
     uploadBtn.addEventListener("click", uploadSelectedFile);
     clearBtn.addEventListener("click", clearSelectedFile);
     refreshBtn.addEventListener("click", loadFiles);
+    receivedRefreshBtn.addEventListener("click", loadFiles);
     backendBtn.addEventListener("click", () => window.open(`${BACKEND_URL}/api/health`, "_blank"));
 
     initFileTransfer();
@@ -109,6 +112,13 @@ async function loadFiles() {
             tbody.appendChild(createFileRow(file));
         });
 
+        const bottomSpacer = document.createElement("tr");
+        bottomSpacer.className = "files-table-bottom-spacer";
+        const bottomSpacerCell = document.createElement("td");
+        bottomSpacerCell.colSpan = 5;
+        bottomSpacer.appendChild(bottomSpacerCell);
+        tbody.appendChild(bottomSpacer);
+
         emptyState.classList.add("hidden");
         tableWrapper.classList.remove("hidden");
     } catch (error) {
@@ -135,12 +145,63 @@ function createFileRow(file) {
     const uploadedCell = document.createElement("td");
     uploadedCell.textContent = formatDate(file.uploadedAt);
 
+    const actionsCell = document.createElement("td");
+    actionsCell.className = "file-actions-cell";
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "file-action-btn danger";
+    deleteButton.textContent = "Delete";
+    deleteButton.addEventListener("click", () => deleteFile(file.id, deleteButton));
+    actionsCell.appendChild(deleteButton);
+
     row.appendChild(nameCell);
     row.appendChild(sizeCell);
     row.appendChild(senderCell);
     row.appendChild(uploadedCell);
+    row.appendChild(actionsCell);
 
     return row;
+}
+
+async function deleteFile(id, button) {
+    if (!id || !window.confirm("Delete this received file from the PC?")) {
+        return;
+    }
+
+    button.disabled = true;
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/files/${encodeURIComponent(id)}`, {
+            method: "DELETE"
+        });
+
+        if (!response.ok) {
+            throw new Error("Delete failed");
+        }
+
+        await loadFiles();
+        showToast("File deleted from the PC.", "success");
+    } catch (error) {
+        button.disabled = false;
+        showToast("Cannot delete file. Check backend connection.", "error");
+    }
+}
+
+function showToast(text, type = "") {
+    const toast = document.getElementById("toast_notification");
+    if (!toast) {
+        return;
+    }
+
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+    }
+
+    toast.textContent = text;
+    toast.className = `toast-notification visible ${type}`;
+    toastTimer = setTimeout(() => {
+        toast.className = "toast-notification";
+    }, 3000);
 }
 
 function setSelectedFile(file) {
@@ -212,6 +273,7 @@ function uploadSelectedFile() {
         if (request.status >= 200 && request.status < 300) {
             progressBar.style.width = "100%";
             setUploadMessage("Upload completed.", "success");
+            showToast("File đã được truyền đến điện thoại.", "success");
             clearSelectedFile();
             await loadFiles();
         } else {

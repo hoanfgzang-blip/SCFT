@@ -1,8 +1,12 @@
 package com.example.myapplication
 
+import android.R
 import android.content.Context
+import android.content.ContentValues
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,6 +37,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -53,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -66,6 +73,7 @@ import java.io.IOException
 import org.json.JSONObject
 private const val BACKEND_URL = "http://127.0.0.1:7878"
 private const val MAX_UPLOAD_BYTES = 2L * 1024L * 1024L * 1024L
+private const val RECEIVED_FILE_PREFS = "scft_received_files"
 private val AppBackground = Color(0xFFF6F7F9)
 private val AppSurface = Color(0xFFFFFFFF)
 private val AppText = Color(0xFF171A1F)
@@ -128,22 +136,45 @@ fun UsbFileTransferScreen(
     var remoteFilesError by remember {
         mutableStateOf<String?>(null)
     }
+    var knownRemoteFileIds by remember { mutableStateOf<Set<String>?>(null) }
     var pendingDownloadFile by remember {
         mutableStateOf<RemoteFile?>(null)
     }
     var downloadingFileId by remember {
         mutableStateOf<String?>(null)
     }
+    var deletingFileId by remember { mutableStateOf<String?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    suspend fun refreshRemoteFiles() {
-        loadingRemoteFiles = true
+    suspend fun refreshRemoteFiles(showLoading: Boolean = true) {
+        if (showLoading) {
+            loadingRemoteFiles = true
+        }
         try {
-            remoteFiles = fetchRemoteFiles()
+            val latestFiles = fetchRemoteFiles()
+            val previousIds = knownRemoteFileIds
+            remoteFiles = latestFiles
+            knownRemoteFileIds = latestFiles.map { it.id }.toSet()
+
+            if (previousIds != null && pendingDownloadFile == null) {
+                val newPcFile = latestFiles.firstOrNull { file ->
+                    file.id !in previousIds &&
+                        !file.senderDeviceId.startsWith("android-") &&
+                        savedUriFor(context, file.id) == null &&
+                        !wasPromptedFor(context, file.id)
+                }
+                if (newPcFile != null) {
+                    markPrompted(context, newPcFile.id)
+                    pendingDownloadFile = newPcFile
+                }
+            }
             remoteFilesError = null
         } catch (error: Exception) {
             remoteFilesError = error.message ?: "Không thể tải danh sách file."
         } finally {
-            loadingRemoteFiles = false
+            if (showLoading) {
+                loadingRemoteFiles = false
+            }
         }
     }
 
@@ -176,17 +207,32 @@ fun UsbFileTransferScreen(
 
         downloadingFileId = file.id
         scope.launch {
-            status = downloadRemoteFile(context, file, destinationUri)
+            val result = downloadRemoteFile(context, file, destinationUri)
+            status = result.message
+            if (result.success) {
+                saveLocalUri(context, file.id, destinationUri)
+                snackbarHostState.showSnackbar("Đã nhận file ${file.originalName}.")
+            }
             downloadingFileId = null
         }
     }
 
+    LaunchedEffect(pendingDownloadFile) {
+        pendingDownloadFile?.let { file ->
+            downloadPicker.launch(file.originalName)
+        }
+    }
+
     LaunchedEffect(Unit) {
-        refreshRemoteFiles()
+        while (true) {
+            refreshRemoteFiles(showLoading = false)
+            delay(2500)
+        }
     }
     Scaffold(
         modifier = modifier,
         containerColor = AppBackground,
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             Surface(color = AppSurface, shadowElevation = 1.dp) {
                 Row(
@@ -212,7 +258,10 @@ fun UsbFileTransferScreen(
                     }
                     OutlinedButton(
                         onClick = onOpenPcScreen,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.Black
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.Black),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Text("Màn hình PC")
@@ -265,14 +314,24 @@ fun UsbFileTransferScreen(
                 loading = loadingRemoteFiles,
                 error = remoteFilesError,
                 downloadingFileId = downloadingFileId,
+                deletingFileId = deletingFileId,
                 onRefresh = {
                     scope.launch {
                         refreshRemoteFiles()
                     }
                 },
-                onDownload = { file ->
-                    pendingDownloadFile = file
-                    downloadPicker.launch(file.originalName)
+                onDelete = { file ->
+                    deletingFileId = file.id
+                    scope.launch {
+                        val result = deleteRemoteFile(context, file)
+                        if (result == null) {
+                            remoteFiles = remoteFiles.filterNot { it.id == file.id }
+                            snackbarHostState.showSnackbar("Đã xóa file và nhật ký nhận file.")
+                        } else {
+                            snackbarHostState.showSnackbar(result)
+                        }
+                        deletingFileId = null
+                    }
                 }
             )
 
@@ -325,18 +384,6 @@ private fun ConnectionCard() {
             Column(modifier = Modifier) {
                 Text("Kết nối đến máy tính", color = AppText, fontWeight = FontWeight.SemiBold)
                 Text(BACKEND_URL, color = AppMuted, style = MaterialTheme.typography.bodySmall)
-            }
-            Surface(
-                color = AppSuccessSoft,
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Text(
-                    text = "USB ADB",
-                    color = AppSuccess,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold
-                )
             }
         }
     }
@@ -401,7 +448,10 @@ private fun FileSelectionCard(
                     modifier = Modifier,
                     enabled = !uploading,
                     onClick = onPickFile,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.Black
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.Black),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Text("Chọn tệp")
@@ -486,8 +536,9 @@ private fun RemoteFilesCard(
     loading: Boolean,
     error: String?,
     downloadingFileId: String?,
+    deletingFileId: String?,
     onRefresh: () -> Unit,
-    onDownload: (RemoteFile) -> Unit
+    onDelete: (RemoteFile) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -522,7 +573,10 @@ private fun RemoteFilesCard(
                 OutlinedButton(
                     onClick = onRefresh,
                     enabled = !loading,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.Black
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.Black),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Text(if (loading) "Đang tải" else "Làm mới")
@@ -562,7 +616,8 @@ private fun RemoteFilesCard(
                             RemoteFileRow(
                                 file = file,
                                 downloading = downloadingFileId == file.id,
-                                onDownload = { onDownload(file) }
+                                deleting = deletingFileId == file.id,
+                                onDelete = { onDelete(file) }
                             )
                         }
                     }
@@ -576,7 +631,8 @@ private fun RemoteFilesCard(
 private fun RemoteFileRow(
     file: RemoteFile,
     downloading: Boolean,
-    onDownload: () -> Unit
+    deleting: Boolean,
+    onDelete: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -622,12 +678,15 @@ private fun RemoteFileRow(
             }
 
             OutlinedButton(
-                onClick = onDownload,
-                enabled = !downloading,
-                border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder),
+                onClick = onDelete,
+                enabled = !downloading && !deleting,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color.Black
+                ),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color.Black),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Text(if (downloading) "Đang tải" else "Tải xuống")
+                Text(if (deleting) "Đang xóa" else "Xóa")
             }
         }
     }
@@ -729,6 +788,7 @@ private suspend fun fetchRemoteFiles(): List<RemoteFile> =
                             id = item.getString("id"),
                             originalName = item.getString("originalName"),
                             size = item.optLong("size", 0L),
+                            senderDeviceId = item.optString("senderDeviceId"),
                             uploadedAt = item.optString("uploadedAt"),
                             downloadUrl = item.getString("downloadUrl")
                         )
@@ -744,7 +804,7 @@ private suspend fun downloadRemoteFile(
     context: Context,
     file: RemoteFile,
     destinationUri: Uri
-): String = withContext(Dispatchers.IO) {
+): DownloadResult = withContext(Dispatchers.IO) {
     val url = URL("$BACKEND_URL${file.downloadUrl}")
     val connection = url.openConnection() as HttpURLConnection
 
@@ -756,11 +816,14 @@ private suspend fun downloadRemoteFile(
         val responseCode = connection.responseCode
         if (responseCode !in 200..299) {
             val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            return@withContext "Tải file thất bại: HTTP $responseCode ${error.take(120)}"
+            return@withContext DownloadResult(
+                "Tải file thất bại: HTTP $responseCode ${error.take(120)}",
+                false
+            )
         }
 
         val output = context.contentResolver.openOutputStream(destinationUri)
-            ?: return@withContext "Không thể mở nơi lưu file."
+            ?: return@withContext DownloadResult("Không thể mở nơi lưu file.", false)
 
         connection.inputStream.use { input ->
             output.use { target ->
@@ -774,13 +837,43 @@ private suspend fun downloadRemoteFile(
             }
         }
 
-        "Đã tải file ${file.originalName} xuống điện thoại."
+        DownloadResult("Đã tải file ${file.originalName} xuống điện thoại.", true)
     } catch (error: Exception) {
-        "Tải file thất bại: ${error.message ?: "Lỗi kết nối"}"
+        DownloadResult("Tải file thất bại: ${error.message ?: "Lỗi kết nối"}", false)
     } finally {
         connection.disconnect()
     }
 }
+
+private data class DownloadResult(
+    val message: String,
+    val success: Boolean
+)
+
+private suspend fun deleteRemoteFile(context: Context, file: RemoteFile): String? =
+    withContext(Dispatchers.IO) {
+        val url = URL("$BACKEND_URL/api/files/${URLEncoder.encode(file.id, "UTF-8")}")
+        val connection = url.openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "DELETE"
+            connection.connectTimeout = 7000
+            connection.readTimeout = 30000
+            val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                return@withContext "Không thể xóa file trên máy tính: HTTP $responseCode"
+            }
+
+            savedUriFor(context, file.id)?.let { uriText ->
+                context.contentResolver.delete(Uri.parse(uriText), null, null)
+            }
+            removeLocalUri(context, file.id)
+            null
+        } catch (error: Exception) {
+            "Không thể xóa file. Kiểm tra kết nối USB."
+        } finally {
+            connection.disconnect()
+        }
+    }
 
 private data class PickedFileInfo(
     val name: String,
@@ -791,9 +884,31 @@ private data class RemoteFile(
     val id: String,
     val originalName: String,
     val size: Long,
+    val senderDeviceId: String,
     val uploadedAt: String,
     val downloadUrl: String
 )
+
+private fun receivedFilePreferences(context: Context) =
+    context.getSharedPreferences(RECEIVED_FILE_PREFS, Context.MODE_PRIVATE)
+
+private fun savedUriFor(context: Context, fileId: String): String? =
+    receivedFilePreferences(context).getString("uri_$fileId", null)
+
+private fun saveLocalUri(context: Context, fileId: String, uri: Uri) {
+    receivedFilePreferences(context).edit().putString("uri_$fileId", uri.toString()).apply()
+}
+
+private fun removeLocalUri(context: Context, fileId: String) {
+    receivedFilePreferences(context).edit().remove("uri_$fileId").apply()
+}
+
+private fun wasPromptedFor(context: Context, fileId: String): Boolean =
+    receivedFilePreferences(context).getBoolean("prompted_$fileId", false)
+
+private fun markPrompted(context: Context, fileId: String) {
+    receivedFilePreferences(context).edit().putBoolean("prompted_$fileId", true).apply()
+}
 
 private fun Context.readFileInfo(uri: Uri): PickedFileInfo {
     var name = uri.lastPathSegment ?: "selected-file"
