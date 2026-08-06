@@ -223,7 +223,20 @@ body.dark-mode .drop-zone img {
 }
 
 .files-panel {
-    min-height: 260px;
+    height: 430px;
+    min-height: 430px;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.files-panel-heading {
+    align-items: center;
+}
+
+.files-panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
 .empty-state {
@@ -237,7 +250,41 @@ body.dark-mode .drop-zone img {
 }
 
 .files-table-wrapper {
+    height: 310px;
+    box-sizing: border-box;
     overflow-x: auto;
+    overflow-y: auto;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    scroll-snap-type: y proximity;
+}
+
+.files-table-wrapper::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+}
+
+.files-table-wrapper::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.files-table-wrapper::-webkit-scrollbar-thumb {
+    background: #c8cdd4;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.files-table-wrapper::-webkit-scrollbar-thumb:hover {
+    background: #929aa5;
+    border: 1px solid transparent;
+    background-clip: padding-box;
+}
+
+body.dark-mode .files-table-wrapper::-webkit-scrollbar-thumb {
+    background: #5b6470;
+    border-color: transparent;
+    background-clip: padding-box;
 }
 
 .files-table {
@@ -245,6 +292,7 @@ body.dark-mode .drop-zone img {
     min-width: 720px;
     border-collapse: collapse;
     text-align: left;
+    table-layout: fixed;
 }
 
 .files-table th,
@@ -259,18 +307,49 @@ body.dark-mode .drop-zone img {
     font-size: 13px;
     font-weight: 600;
     background: var(--menu-hover-bg);
+    position: sticky;
+    top: 0;
+    z-index: 1;
 }
 
 .files-table td {
     color: var(--text-sub);
     font-size: 13px;
+    height: 82px;
+    max-height: 82px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.files-table tbody tr {
+    height: 82px;
+    scroll-snap-align: start;
+}
+
+.files-table tbody tr.files-table-bottom-spacer,
+.files-table tbody tr.files-table-bottom-spacer td {
+    height: 82px;
+    padding: 0;
+    border-bottom: 0;
 }
 
 .file-name-cell {
     color: var(--text-main);
     font-weight: 600;
     max-width: 280px;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-actions-cell {
+    white-space: nowrap;
+}
+
+.files-table td:nth-child(3) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .file-actions {
@@ -293,6 +372,41 @@ body.dark-mode .drop-zone img {
 
 .hidden {
     display: none !important;
+}
+
+.toast-notification {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 1000;
+    max-width: min(360px, calc(100vw - 48px));
+    padding: 14px 20px;
+    background: var(--bg-card);
+    color: var(--text-main); 
+    font-size: 14px;
+    font-weight: 500; 
+    border: 1px solid var(--border-color);
+    border-left: 5px solid transparent; 
+    border-radius: 8px; 
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
+    opacity: 0;
+    transform: translateY(20px);
+    pointer-events: none;
+    transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), 
+                transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toast-notification.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast-notification.success {
+    border-left-color: #1f9d55;
+}
+
+.toast-notification.error {
+    border-left-color: #e74c3c;
 }
 
 @media screen and (max-width: 900px) {
