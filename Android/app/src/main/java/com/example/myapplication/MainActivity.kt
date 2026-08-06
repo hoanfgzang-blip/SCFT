@@ -94,7 +94,11 @@ class MainActivity : ComponentActivity() {
             MyApplicationTheme {
                 ScftApp(
                     initialScreen = intent.getStringExtra("scft_screen"),
-                    initialDisplay = intent.getIntExtra("scft_display", 0),
+                    // PC Screen is intended for the secondary monitor. If the app is
+                    // opened manually over LAN, default to display index 1; the backend
+                    // safely falls back to index 0 when no secondary display exists.
+                    initialDisplay = intent.getIntExtra("scft_display", 1),
+                    initialBaseUrl = intent.getStringExtra("scft_base_url") ?: "http://127.0.0.1:7878",
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -103,11 +107,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun ScftApp(initialScreen: String?, initialDisplay: Int, modifier: Modifier = Modifier) {
+fun ScftApp(initialScreen: String?, initialDisplay: Int, initialBaseUrl: String, modifier: Modifier = Modifier) {
     var currentScreen by rememberSaveable { mutableStateOf(if (initialScreen == "pc") "pc" else "transfer") }
 
     if (currentScreen == "pc") {
-        PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, onBack = { currentScreen = "transfer" })
+        PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, baseUrl = initialBaseUrl, onBack = { currentScreen = "transfer" })
         return
     }
 

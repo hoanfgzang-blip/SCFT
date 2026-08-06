@@ -40,11 +40,19 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-private const val PC_SCREEN_FRAME_URL = "http://127.0.0.1:7878/api/screen/frame?scale=1.0&quality=0.78"
 private const val FRAME_INTERVAL_MS = 45L
 
+private fun cleanPcBaseUrl(value: String): String {
+    return value.trim()
+        .substringBefore('?')
+        .substringBefore('#')
+        .removeSuffix("/api/screen/view")
+        .removeSuffix("/api/screen")
+        .trimEnd('/')
+}
+
 @Composable
-fun JpegPcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, onBack: () -> Unit) {
+fun JpegPcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, baseUrl: String = "http://127.0.0.1:7878", onBack: () -> Unit) {
     val view = LocalView.current
     var running by remember { mutableStateOf(true) }
     var controlsVisible by remember { mutableStateOf(false) }
@@ -70,7 +78,7 @@ fun JpegPcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 
         while (isActive) {
             val startedAt = android.os.SystemClock.elapsedRealtime()
             try {
-                frame = withContext(Dispatchers.IO) { loadPcFrame(displayIndex) }
+                frame = withContext(Dispatchers.IO) { loadPcFrame(baseUrl, displayIndex) }
                 status = "Đang nhận màn hình PC qua USB."
             } catch (error: Exception) {
                 status = "Không thể nhận màn hình PC. Kiểm tra SCFT Desktop và gỡ lỗi USB."
@@ -126,8 +134,8 @@ fun JpegPcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 
     }
 }
 
-private fun loadPcFrame(displayIndex: Int): Bitmap {
-    val connection = URL("$PC_SCREEN_FRAME_URL&display=$displayIndex").openConnection() as HttpURLConnection
+private fun loadPcFrame(baseUrl: String, displayIndex: Int): Bitmap {
+    val connection = URL("${cleanPcBaseUrl(baseUrl)}/api/screen/frame?scale=1.0&quality=0.78&display=$displayIndex").openConnection() as HttpURLConnection
     connection.connectTimeout = 5000
     connection.readTimeout = 1500
     connection.useCaches = false

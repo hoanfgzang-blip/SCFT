@@ -80,8 +80,28 @@ final class H264ScreenStreamer implements AutoCloseable {
     }
 
     private List<String> encoderBase() {
-        String executable = System.getenv().getOrDefault("SCFT_FFMPEG_PATH", "ffmpeg");
+        String executable = resolveFfmpegExecutable();
         return new ArrayList<>(List.of(executable, "-hide_banner", "-loglevel", "error"));
+    }
+
+    private static String resolveFfmpegExecutable() {
+        String configured = System.getenv("SCFT_FFMPEG_PATH");
+        if (configured != null && !configured.isBlank() && Files.isRegularFile(Path.of(configured))) {
+            return configured;
+        }
+
+        Path workingDirectory = Path.of(System.getProperty("user.dir", "."));
+        for (Path candidate : List.of(
+                workingDirectory.resolve("build-resources/ffmpeg/bin/ffmpeg.exe"),
+                workingDirectory.resolve("../ffmpeg/bin/ffmpeg.exe"),
+                workingDirectory.resolve("../resources/ffmpeg/bin/ffmpeg.exe")
+        )) {
+            if (Files.isRegularFile(candidate)) {
+                return candidate.toAbsolutePath().normalize().toString();
+            }
+        }
+
+        return configured == null || configured.isBlank() ? "ffmpeg" : configured;
     }
 
     private void appendEncoderOutput(List<String> command) {

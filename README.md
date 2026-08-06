@@ -134,7 +134,7 @@ Neu tu dong khong duoc, chay thu cong:
 adb devices
 adb reverse tcp:7878 tcp:7878
 ```
-## PC screen share to phone
+## PC Screen: dien thoai lam man hinh phu
 
 Trang PC Screen Share nam tai:
 
@@ -150,12 +150,26 @@ Backend cung cap:
 GET /api/screen/status
 GET /api/screen/frame
 GET /api/screen/view
+GET /api/screen/stream
 ```
 
-Dien thoai co the mo:
+Luong chinh qua USB:
 
 ```text
-http://127.0.0.1:7878/api/screen/view
+Windows VDD -> man hinh phu that cua Windows
+             -> SCFT backend H.264
+             -> adb reverse TCP 7878 qua cap USB
+             -> ung dung SCFT Android
 ```
 
-Neu dung USB ADB reverse, hoac mo LAN URL hien trong app neu dien thoai va PC cung mang. Tinh nang hien tai co the mirror/preview man hinh PC len dien thoai. SCFT da co source Windows Indirect Display Driver tai `windows_driver/SCFTVirtualDisplay/` de tao mot man hinh ao 1920x1080 60 Hz. Khi driver duoc build, ky va cai dat, Windows se xem no la monitor thu hai; chon monitor nay trong PC Screen Share de truyen sang Android qua USB ADB. Build/cai dat chua the thuc hien tren may hien tai vi chua co Visual Studio C++ Build Tools va Windows Driver Kit. Huong dan nam trong `windows_driver/SCFTVirtualDisplay/README.md`.
+Mo trang `PCScreen.html`, bam `Bat dau`. SCFT se kiem tra/cai Virtual Display Driver qua WinGet, mo VDD Control neu can va cho man hinh ao xuat hien. Lan dau nguoi dung bam `Install/Enable` trong VDD Control va chap nhan UAC. Sau do chon `Extend these displays` trong Windows Display Settings.
+
+Khi dien thoai da bat USB debugging va chap nhan khoa ADB, SCFT tu chay `adb reverse tcp:7878 tcp:7878` roi mo PC Screen tren Android. Khong can Test Mode va khong can HDMI dummy.
+
+Neu khong dung USB, app hien URL LAN co san chi so man hinh; dien thoai va PC phai o cung mang. Android viewer cung cho phep nhap dia chi backend LAN.
+
+Neu Windows bao VDD bi trung node hoac khong tao man hinh ao, mo PowerShell bang `Run as administrator` tai thu muc du an va chay `powershell -ExecutionPolicy Bypass -File .\scripts\repair-vdd.ps1`. Script se go cac node VDD cu, cai lai dung mot driver, sau do reboot Windows.
+
+Neu loi nay xuat hien trong ung dung, nut `Sua driver` se mo cung script bang quyen Administrator; sau khi script xong van can reboot Windows.
+
+`windows_driver/SCFTVirtualDisplay/` la driver thu nghiem cu cua SCFT, chi giu lai de tham khao va khong con duoc dong goi hoac su dung boi PC Screen hien tai. Khong dung cac script trong thu muc do cho ban nguoi dung thong thuong.

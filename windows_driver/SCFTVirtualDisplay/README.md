@@ -1,4 +1,9 @@
-# SCFT Virtual Display
+# SCFT Virtual Display (legacy development driver)
+
+> This is the old SCFT development driver. It is not used by the current PC
+> Screen feature and is not packaged by the desktop app. The current feature
+> uses the signed VirtualDrivers VDD package instead, so end users do not need
+> Windows Test Mode. Keep this folder only for historical source reference.
 
 This folder contains the Windows Indirect Display Driver source used to create one real virtual monitor for SCFT. When the driver package is installed and `SCFTVirtualDisplayApp.exe` is running, Windows exposes a separate 1920x1080 60 Hz display. Select that display in SCFT PC Screen Share and extend the desktop to it in Windows Display Settings.
 

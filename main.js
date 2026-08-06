@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, shell } = require('electron');
 const { execFile, execFileSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -15,19 +15,179 @@ let backendProcess = null;
 let runtimePaths = null;
 let popoutWindow = null;
 let virtualDisplayProcess = null;
+const VDD_WINGET_ID = 'VirtualDrivers.Virtual-Display-Driver';
+const VDD_VERSION = '25.7.23';
+const VDD_RELEASE_URL = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases';
 
 function waitForVirtualDisplay(timeoutMs) {
     return new Promise(resolve => {
         const deadline = Date.now() + timeoutMs;
         const check = () => {
             if (screen.getAllDisplays().length > 1 || Date.now() >= deadline) {
-                resolve();
+                resolve(screen.getAllDisplays().length > 1);
                 return;
             }
             setTimeout(check, 250);
         };
         check();
     });
+}
+
+function runExternal(command, args, options = {}) {
+    return new Promise((resolve, reject) => {
+        execFile(command, args, { windowsHide: true, ...options }, (error, stdout, stderr) => {
+            if (error) {
+                reject(new Error((stderr || stdout || error.message || '').trim()));
+                return;
+            }
+            resolve((stdout || '').trim());
+        });
+    });
+}
+
+async function isVddInstalled() {
+    const status = await getVddDeviceStatus();
+    return status.installed;
+}
+
+async function getVddDeviceStatus() {
+    try {
+        const output = await runExternal('pnputil.exe', ['/enum-devices', '/class', 'Display']);
+        const nodes = output.match(/Device Description:\s+Virtual Display Driver/gi) || [];
+        const started = output.match(/Status:\s+Started/gi) || [];
+        return { installed: nodes.length > 0, nodeCount: nodes.length, startedCount: started.length, output };
+    } catch (_) {
+        return { installed: false, nodeCount: 0, startedCount: 0, output: '' };
+    }
+}
+
+async function installVdd() {
+    try {
+        await runExternal('winget.exe', [
+            'install',
+            '--id', VDD_WINGET_ID,
+            '--exact',
+            '--version', VDD_VERSION,
+            '--accept-source-agreements',
+            '--accept-package-agreements'
+        ]);
+    } catch (error) {
+        const message = error.message || 'Không thể cài Virtual Display Driver.';
+        const wrapped = new Error(`${message} Mở trang tải driver chính thức để cài thủ công.`);
+        wrapped.code = 'VDD_INSTALL_FAILED';
+        wrapped.releaseUrl = VDD_RELEASE_URL;
+        throw wrapped;
+    }
+}
+
+function findVddControlExecutable() {
+    const roots = [
+        path.join(localAppData, 'Microsoft', 'WinGet', 'Packages'),
+        path.join(__dirname, 'build-resources', 'virtual-display')
+    ];
+    const queue = roots.filter(root => fs.existsSync(root));
+    const visited = new Set();
+
+    while (queue.length > 0) {
+        const current = queue.shift();
+        if (visited.has(current)) continue;
+        visited.add(current);
+
+        let entries = [];
+        try {
+            entries = fs.readdirSync(current, { withFileTypes: true });
+        } catch (_) {
+            continue;
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                queue.push(fullPath);
+                continue;
+            }
+            if (entry.isFile() && /(?:VDD|Virtual).*?(?:Control|Driver).*\.exe$/i.test(entry.name)) {
+                return fullPath;
+            }
+        }
+    }
+
+    return null;
+}
+
+function launchVddControl() {
+    const executable = findVddControlExecutable();
+    if (!executable) return false;
+
+    const child = spawn(executable, [], {
+        detached: true,
+        windowsHide: false,
+        stdio: 'ignore'
+    });
+    child.unref();
+    return true;
+}
+
+function startVddRepair() {
+    const scriptPath = path.join(__dirname, 'scripts', 'repair-vdd.ps1');
+    if (!fs.existsSync(scriptPath)) {
+        const error = new Error('Không tìm thấy script sửa Virtual Display Driver trong gói SCFT.');
+        error.code = 'VDD_REPAIR_SCRIPT_MISSING';
+        throw error;
+    }
+
+    const escapedScriptPath = scriptPath.replace(/'/g, "''");
+    const command = [
+        `$scriptPath = '${escapedScriptPath}'`,
+        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath) -Wait -PassThru",
+        'exit $process.ExitCode'
+    ].join('; ');
+
+    return runExternal('powershell.exe', ['-NoProfile', '-Command', command]);
+}
+
+async function ensureVirtualDisplay() {
+    if (screen.getAllDisplays().length > 1) {
+        return { ready: true, displays: screen.getAllDisplays().length, driverInstalled: true };
+    }
+
+    let status = await getVddDeviceStatus();
+    if (status.nodeCount > 1) {
+        const error = new Error(`Windows đang có ${status.nodeCount} node Virtual Display Driver bị trùng. Hãy gỡ sạch VDD bằng PowerShell Administrator rồi cài lại một lần.`);
+        error.code = 'VDD_DUPLICATE_DEVICES';
+        error.vddNodeCount = status.nodeCount;
+        throw error;
+    }
+
+    if (!status.installed) {
+        await installVdd();
+        status = await getVddDeviceStatus();
+        if (status.nodeCount > 1) {
+            const error = new Error(`Windows đang có ${status.nodeCount} node Virtual Display Driver bị trùng. Hãy gỡ sạch VDD bằng PowerShell Administrator rồi cài lại một lần.`);
+            error.code = 'VDD_DUPLICATE_DEVICES';
+            error.vddNodeCount = status.nodeCount;
+            throw error;
+        }
+    }
+
+    const controlOpened = launchVddControl();
+    const appeared = await waitForVirtualDisplay(controlOpened ? 60000 : 15000);
+    if (!appeared) {
+        status = await getVddDeviceStatus();
+        if (status.nodeCount > 1) {
+            const error = new Error(`Windows đang có ${status.nodeCount} node Virtual Display Driver bị trùng. Hãy gỡ sạch VDD bằng PowerShell Administrator rồi cài lại một lần.`);
+            error.code = 'VDD_DUPLICATE_DEVICES';
+            error.vddNodeCount = status.nodeCount;
+            throw error;
+        }
+        const error = new Error(controlOpened
+            ? 'VDD Control đã mở nhưng Windows chưa nhận màn hình ảo. Hãy bấm Install/Enable trong VDD Control rồi thử lại.'
+            : 'Virtual Display Driver đã cài nhưng chưa tìm thấy VDD Control. Hãy mở VDD Control từ gói driver rồi bấm Install/Enable.');
+        error.code = 'VDD_DISPLAY_NOT_READY';
+        throw error;
+    }
+
+    return { ready: true, displays: screen.getAllDisplays().length, driverInstalled: true };
 }
 
 function getVirtualDisplayAppPath() {
@@ -96,47 +256,13 @@ for($i=0;$i -lt 20;$i++){
     });
 }
 async function startVirtualDisplay() {
-    if (virtualDisplayProcess || screen.getAllDisplays().length > 1) {
-        await setVirtualDisplayMode();
-        return;
-    }
-
-    const appPath = getVirtualDisplayAppPath();
-    if (!fs.existsSync(appPath)) return;
-
-    if (app.isPackaged) {
-        virtualDisplayProcess = spawn(appPath, [], {
-            windowsHide: true,
-            stdio: 'ignore'
-        });
-
-        virtualDisplayProcess.on('exit', () => {
-            virtualDisplayProcess = null;
-        });
-    } else {
-        const command = `Start-Process -FilePath '${appPath.replace(/'/g, "''")}' -Verb RunAs -WindowStyle Hidden`;
-        execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
-            windowsHide: true
-        });
-    }
-
-    await waitForVirtualDisplay(8000);
-    await setVirtualDisplayMode();
+    return ensureVirtualDisplay();
 }
 
 function stopVirtualDisplay() {
-    if (virtualDisplayProcess) {
-        virtualDisplayProcess.kill();
-        virtualDisplayProcess = null;
-        return Promise.resolve();
-    }
-
-    if (app.isPackaged) return Promise.resolve();
-
-    const command = "Start-Process -FilePath 'taskkill.exe' -ArgumentList '/F','/IM','SCFTVirtualDisplayApp.exe' -Verb RunAs -Wait -WindowStyle Hidden";
-    return new Promise(resolve => {
-        execFile("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], { windowsHide: true }, () => resolve());
-    });
+    // Stopping a session must not uninstall or disable VDD. Windows may still
+    // have application windows positioned on the virtual monitor.
+    return Promise.resolve({ stopped: true, driverKept: true });
 }
 
 function getBundledResourcePath(name) {
@@ -366,6 +492,18 @@ app.whenReady().then(() => {
     startBackend();
     startUsbTunnel();
     createWindow();
+
+    ipcMain.handle('scft-virtual-display-start', async () => startVirtualDisplay());
+    ipcMain.handle('scft-virtual-display-stop', async () => stopVirtualDisplay());
+    ipcMain.handle('scft-virtual-display-open-installer', async () => {
+        if (launchVddControl()) return { opened: true, local: true };
+        await shell.openExternal(VDD_RELEASE_URL);
+        return { opened: true, local: false };
+    });
+    ipcMain.handle('scft-virtual-display-repair', async () => {
+        await startVddRepair();
+        return { started: true };
+    });
 
     ipcMain.on('open-popout-window', (event, data) => {
         const adbPath = (data && data.adbPath) || (process.env.SCFT_ADB_PATH || '');

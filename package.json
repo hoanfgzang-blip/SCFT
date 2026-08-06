@@ -1,7 +1,7 @@
 {
   "name": "scft",
   "version": "1.0.0",
-  "description": "",
+  "description": "SCFT screen copy, file transfer and PC second-screen streaming",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -38,8 +38,9 @@
       "package.json",
       "THIRD_PARTY_NOTICES.txt",
       "web_app/**/*",
-      "backend/run.ps1",
-      "backend/src/**/*",
+    "backend/run.ps1",
+    "scripts/repair-vdd.ps1",
+    "backend/src/**/*",
       "backend/out/**/*"
     ],
     "extraResources": [
@@ -52,19 +53,13 @@
         "to": "platform-tools"
       },
       {
-        "from": "build-resources/virtual-display",
-        "to": "virtual-display",
-        "filter": ["**/*"]
-      }
-    ,
-      {
         "from": "build-resources/ffmpeg",
         "to": "ffmpeg",
         "filter": ["**/*"]
       }
     ],
     "win": {
-      "requestedExecutionLevel": "requireAdministrator",
+      "requestedExecutionLevel": "asInvoker",
       "target": [
         {
           "target": "nsis",

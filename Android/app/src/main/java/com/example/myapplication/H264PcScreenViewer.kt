@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -45,13 +46,21 @@ import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
-private const val PC_SCREEN_STREAM_BASE_URL = "http://127.0.0.1:7878/api/screen/stream"
-private const val PC_SCREEN_LATENCY_URL = "http://127.0.0.1:7878/api/screen/latency"
+private const val DEFAULT_PC_SCREEN_BASE_URL = "http://127.0.0.1:7878"
 private const val FRAME_INTERVAL_US = 16_666L
 private const val PC_SCREEN_LOG_TAG = "SCFT-PC-SCREEN"
 private const val READ_BUFFER_BYTES = 128 * 1024
 private const val DEFAULT_PENDING_H264_BYTES = 2 * 1024 * 1024
 private const val MAX_INPUT_NALS_PER_CYCLE = 32
+
+private fun cleanPcBaseUrl(value: String): String {
+    return value.trim()
+        .substringBefore('?')
+        .substringBefore('#')
+        .removeSuffix("/api/screen/view")
+        .removeSuffix("/api/screen")
+        .trimEnd('/')
+}
 
 private val PC_SCREEN_PRESETS = listOf(
     PcScreenPreset("2K", 2560, 1440, "24M", DEFAULT_PENDING_H264_BYTES),
@@ -61,29 +70,31 @@ private val PC_SCREEN_PRESETS = listOf(
 )
 
 private data class PcScreenPreset(val label: String, val width: Int, val height: Int, val bitrate: String, val pendingLimitBytes: Int, val renderLatestOnly: Boolean = false) {
-    fun streamUrl(displayIndex: Int): String = "$PC_SCREEN_STREAM_BASE_URL?display=$displayIndex&fps=60&format=h264&width=$width&height=$height&bitrate=$bitrate"
+    fun streamUrl(baseUrl: String, displayIndex: Int): String = "${cleanPcBaseUrl(baseUrl)}/api/screen/stream?display=$displayIndex&fps=60&format=h264&width=$width&height=$height&bitrate=$bitrate"
 }
 
 @Composable
-fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, onBack: () -> Unit) {
+fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, baseUrl: String = DEFAULT_PC_SCREEN_BASE_URL, onBack: () -> Unit) {
     var fallback by remember { mutableStateOf(false) }
+    var serverBaseUrl by remember { mutableStateOf(baseUrl) }
     if (fallback) {
-        JpegPcScreenViewerScreen(modifier, displayIndex, onBack)
+        JpegPcScreenViewerScreen(modifier, displayIndex, serverBaseUrl, onBack)
     } else {
-        H264PcScreenViewer(modifier, displayIndex, onBack) { fallback = true }
+        H264PcScreenViewer(modifier, displayIndex, serverBaseUrl, onBack, { serverBaseUrl = it }) { fallback = true }
     }
 }
 
 @Composable
-private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, onBack: () -> Unit, onFallback: () -> Unit) {
+private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, baseUrl: String, onBack: () -> Unit, onBaseUrlChanged: (String) -> Unit, onFallback: () -> Unit) {
     val view = LocalView.current
     var holder by remember { mutableStateOf<SurfaceHolder?>(null) }
     var player by remember { mutableStateOf<LowLatencyH264Player?>(null) }
     var streaming by remember { mutableStateOf(false) }
     var connecting by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("S\u1eb5n s\u00e0ng nh\u1eadn m\u00e0n h\u00ecnh PC qua USB.") }
+    var status by remember { mutableStateOf("S\u1eb5n s\u00e0ng nh\u1eadn m\u00e0n h\u00ecnh PC qua USB ho\u1eb7c LAN.") }
     var metrics by remember { mutableStateOf("") }
-    var preset by remember { mutableStateOf(PC_SCREEN_PRESETS.first()) }
+    var serverUrl by remember { mutableStateOf(baseUrl) }
+    var preset by remember { mutableStateOf(PC_SCREEN_PRESETS[1]) }
 
     fun stopStream() {
         player?.stop()
@@ -102,11 +113,12 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, onBack: ()
         }
         stopStream()
         connecting = true
-        status = "\u0110ang k\u1ebft n\u1ed1i m\u00e0n h\u00ecnh PC qua USB..."
+        status = "\u0110ang k\u1ebft n\u1ed1i m\u00e0n h\u00ecnh PC..."
         player = LowLatencyH264Player(
             surface = surface,
             preset = preset,
             displayIndex = displayIndex,
+            baseUrl = serverUrl,
             onStarted = {
                 connecting = false
                 streaming = true
@@ -201,6 +213,17 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, onBack: ()
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (!streaming && !connecting) {
+                OutlinedTextField(
+                    value = serverUrl,
+                    onValueChange = {
+                        serverUrl = it
+                        onBaseUrlChanged(it)
+                    },
+                    label = { Text("Địa chỉ PC (USB hoặc LAN)") },
+                    singleLine = true
+                )
+            }
+            if (!streaming && !connecting) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PC_SCREEN_PRESETS.forEach { item ->
                         if (item == preset) {
@@ -233,6 +256,7 @@ private class LowLatencyH264Player(
     private val surface: Surface,
     private val preset: PcScreenPreset,
     private val displayIndex: Int,
+    private val baseUrl: String,
     private val onStarted: () -> Unit,
     private val onStopped: () -> Unit,
     private val onStats: (String) -> Unit,
@@ -278,7 +302,7 @@ private class LowLatencyH264Player(
             }
             post(onStarted)
 
-            val http = URL(preset.streamUrl(displayIndex)).openConnection() as HttpURLConnection
+            val http = URL(preset.streamUrl(baseUrl, displayIndex)).openConnection() as HttpURLConnection
             connection = http
             http.connectTimeout = 2500
             http.readTimeout = 2500
@@ -355,8 +379,9 @@ private class LowLatencyH264Player(
                 }
             }
 
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             failed = true
+            Log.e(PC_SCREEN_LOG_TAG, "H264 stream failed for display $displayIndex at $baseUrl", error)
             if (running.get()) post(onError)
         } finally {
             if (running.getAndSet(false)) {
@@ -382,7 +407,7 @@ private class LowLatencyH264Player(
         val startedAt = SystemClock.elapsedRealtime()
         var http: HttpURLConnection? = null
         return try {
-            http = URL(PC_SCREEN_LATENCY_URL).openConnection() as HttpURLConnection
+            http = URL("${cleanPcBaseUrl(baseUrl)}/api/screen/latency").openConnection() as HttpURLConnection
             http.connectTimeout = 250
             http.readTimeout = 250
             http.useCaches = false

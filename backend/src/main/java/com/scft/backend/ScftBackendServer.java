@@ -501,13 +501,18 @@ public final class ScftBackendServer {
     }
 
     private static long virtualDisplayFrameUpdatedAt(int display) throws IOException {
-        if (display == 0 || !Files.isRegularFile(VIRTUAL_DISPLAY_FRAME_PATH)) {
+        if (!"frame".equalsIgnoreCase(System.getenv("SCFT_SCREEN_STREAM_SOURCE"))
+                || display == 0
+                || !Files.isRegularFile(VIRTUAL_DISPLAY_FRAME_PATH)) {
             return 0L;
         }
         return Files.getLastModifiedTime(VIRTUAL_DISPLAY_FRAME_PATH).toMillis();
     }
 
     private static BufferedImage virtualDisplayImage(int display) throws IOException {
+        if (!"frame".equalsIgnoreCase(System.getenv("SCFT_SCREEN_STREAM_SOURCE"))) {
+            return null;
+        }
         if (virtualDisplayFrameUpdatedAt(display) == 0L) {
             return null;
         }

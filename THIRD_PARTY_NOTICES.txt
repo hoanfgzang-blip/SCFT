@@ -5,3 +5,9 @@ FFmpeg is licensed under the GNU Lesser General Public License version 3 or late
 Source and build information: https://github.com/BtbN/FFmpeg-Builds
 FFmpeg source: https://ffmpeg.org/download.html
 The bundled FFmpeg license is available at resources/ffmpeg/LICENSE.txt after installation.
+
+SCFT can install the Virtual Display Driver from VirtualDrivers through Windows
+Package Manager. The driver is distributed by its upstream project under the
+MIT License. SCFT does not modify the signed driver binaries.
+Project: https://github.com/VirtualDrivers/Virtual-Display-Driver
+License: https://github.com/VirtualDrivers/Virtual-Display-Driver/blob/master/LICENSE
