@@ -80,6 +80,34 @@
     opacity: 0.45;
 }
 
+.action-disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.home-notice {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 1000;
+    max-width: min(420px, calc(100vw - 48px));
+    padding: 13px 18px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-card);
+    color: var(--text-main);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+    opacity: 0;
+    transform: translateY(12px);
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.home-notice.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
 .status-grid,
 .action-grid,
 .setup-list {
@@ -87,7 +115,17 @@
     gap: 20px;
 }
 
-.status-grid,
+.status-overview {
+    padding: 20px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+}
+
+.status-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .action-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -103,6 +141,23 @@
 .status-card {
     min-height: 142px;
     padding: 20px;
+}
+
+.connection-summary {
+    margin: 18px 4px 0;
+    color: var(--text-sub);
+    font-size: 14px;
+    text-align: center;
+}
+
+.connection-summary.ready {
+    color: #1f9d55;
+    font-weight: 600;
+}
+
+.connection-summary.warning {
+    color: var(--offline-text);
+    font-weight: 600;
 }
 
 .status-card-head,
@@ -129,6 +184,73 @@
     color: var(--text-sub);
     font-size: 13px;
     margin-top: 7px;
+    overflow-wrap: anywhere;
+}
+
+.device-status-card {
+    display: block;
+    min-height: 190px;
+}
+
+.device-status-card .status-card-head {
+    grid-column: auto;
+}
+
+.device-status-main > strong {
+    margin-top: 18px;
+}
+
+.connection-time {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    color: var(--text-sub);
+    font-size: 13px;
+}
+
+.connection-time strong {
+    display: inline;
+    margin-top: 0;
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+.device-service-status {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    align-self: center;
+}
+
+.device-service-status > div {
+    padding: 14px;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    background: var(--bg-card);
+}
+
+.device-service-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.device-service-status span,
+.device-service-status small {
+    display: block;
+    color: var(--text-sub);
+    font-size: 12px;
+}
+
+.device-service-status strong {
+    margin-top: 8px;
+    font-size: 14px;
+}
+
+.device-service-status small {
+    margin-top: 6px;
     overflow-wrap: anywhere;
 }
 
@@ -275,6 +397,19 @@ body.dark-mode .action-icon img {
     .setup-list {
         grid-template-columns: 1fr;
     }
+
+    .status-overview {
+        padding: 14px;
+    }
+
+    .device-status-card {
+        display: block;
+    }
+
+    .device-service-status {
+        margin-top: 18px;
+        grid-template-columns: 1fr;
+    }
 }
 
 @media screen and (max-width: 650px) {
@@ -318,23 +453,15 @@ body.dark-mode .action-icon img {
     font-size: 13px;
     font-weight: 600;
     padding: 10px 14px;
-}
-
-.primary-action {
     border: 1px solid #000;
-    background: #000;
-    color: #fff;
+    background: #fff;
+    color: #000;
+    transition: background-color 0.25s ease;
 }
 
-.secondary-action {
-    border: 1px solid var(--border-color);
-    background: var(--bg-card);
-    color: var(--text-main);
-}
-
-.primary-action:hover,
-.secondary-action:hover {
-    opacity: 0.78;
+.primary-action:hover:not(.action-disabled),
+.secondary-action:hover:not(.action-disabled) {
+    background: #e5fcff;
 }
 
 @media screen and (max-width: 900px) {
@@ -351,5 +478,11 @@ body.dark-mode .action-icon img {
     .secondary-action {
         flex: 1;
         text-align: center;
+    }
+}
+
+@media screen and (min-width: 901px) and (max-width: 1200px) {
+    .status-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }

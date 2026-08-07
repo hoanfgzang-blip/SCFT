@@ -240,7 +240,7 @@ body.dark-mode .drop-zone img {
 }
 
 .empty-state {
-    min-height: 140px;
+    min-height: 310px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -425,6 +425,16 @@ body.dark-mode .files-table-wrapper::-webkit-scrollbar-thumb {
 
     .ft-toolbar-actions button {
         flex: 1;
+    }
+
+    .ft-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media screen and (min-width: 901px) and (max-width: 1200px) {
+    .file-transfer-page {
+        padding: 20px;
     }
 
     .ft-grid {

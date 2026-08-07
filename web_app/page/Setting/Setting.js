@@ -49,13 +49,28 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const idInput = document.getElementById('deviceId');
     const ipInput = document.getElementById('deviceIp');
-    let deviceId = localLoader('SCFT_DeviceID', '');
-    if (!deviceId) {
-        deviceId = "" + crypto.randomUUID().substring(0, 8).toUpperCase();
-        localSaver('SCFT_DeviceID', deviceId);
+
+    async function loadRealDeviceInfo() {
+        try {
+            const response = await fetch('http://127.0.0.1:7878/api/device');
+
+            if (!response.ok) {
+                throw new Error('Không lấy được thông tin thiết bị');
+            }
+
+            const device = await response.json();
+
+            if (idInput) idInput.value = device.id || '-';
+            if (ipInput) ipInput.value = device.ip || '-';
+        } catch (error) {
+            console.error('Lỗi lấy thông tin máy tính:', error);
+
+            if (idInput) idInput.value = 'Chưa kết nối Backend';
+            if (ipInput) ipInput.value = 'Chưa kết nối Backend';
+        }
     }
-    if (idInput) idInput.value = deviceId;
-    if (ipInput) ipInput.value = "192.168.1.52";
+
+    loadRealDeviceInfo();
 
 
     // ----------------------------------------
