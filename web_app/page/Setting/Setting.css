@@ -63,11 +63,22 @@ h3 {
 }
 #IDnIP{
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 20px;
     min-width: 0;
 
+}
+#ID, #IP {
+    flex: 1 1 260px;
+    min-width: 0;
+}
+#ID {
+    flex-basis: 380px;
+}
+#IP {
+    flex-basis: 220px;
 }
 #ID input, #IP input {
     border: none;
@@ -76,9 +87,9 @@ h3 {
     color: #B3B3B3;
     background-color: transparent;
     border: 1px solid var(--border-color);
-    display: flex;
-    flex: 1;
-    flex-direction: column;
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
     border-radius: 8px;
     padding: 8px;
     cursor: not-allowed;
@@ -282,6 +293,11 @@ body.dark-mode .theme-option input[type="radio"]:checked + .theme-content svg pa
         flex-direction: column;
         align-items: stretch;
         gap: 12px;
+    }
+
+    #ID, #IP {
+        flex: 0 0 auto;
+        width: 100%;
     }
 
     #stream_performance_container {
