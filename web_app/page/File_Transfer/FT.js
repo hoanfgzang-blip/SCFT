@@ -4,6 +4,7 @@ const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 let selectedFile = null;
 let backendOnline = false;
 let toastTimer = null;
+let uploadStartedAt = 0;
 
 document.addEventListener("DOMContentLoaded", () => {
     const fileInput = document.getElementById("file_input");
@@ -257,6 +258,7 @@ function uploadSelectedFile() {
 
     uploadBtn.disabled = true;
     setUploadMessage("Uploading...", "");
+    uploadStartedAt = performance.now();
 
     request.open("POST", `${BACKEND_URL}/api/files?filename=${filename}`);
     request.setRequestHeader("Content-Type", "application/octet-stream");
@@ -266,6 +268,14 @@ function uploadSelectedFile() {
         if (event.lengthComputable) {
             const percent = Math.round((event.loaded / event.total) * 100);
             progressBar.style.width = `${percent}%`;
+
+            const elapsedSeconds = (performance.now() - uploadStartedAt) / 1000;
+            if (elapsedSeconds > 0) {
+                localStorage.setItem(
+                    "SCFT_LastTransferSpeed",
+                    String(event.loaded / elapsedSeconds)
+                );
+            }
         }
     });
 

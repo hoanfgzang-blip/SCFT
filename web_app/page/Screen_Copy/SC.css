@@ -257,3 +257,13 @@
         grid-template-columns: 1fr;
     }
 }
+
+@media screen and (min-width: 901px) and (max-width: 1200px) {
+    .screen-copy-page {
+        padding: 20px;
+    }
+
+    .sc-grid {
+        grid-template-columns: 1fr;
+    }
+}

@@ -242,6 +242,12 @@
     }
 }
 
+@media screen and (min-width: 901px) and (max-width: 1200px) {
+    .pc-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .link-list select {
     width: 100%;
     border: 1px solid var(--border-color);
