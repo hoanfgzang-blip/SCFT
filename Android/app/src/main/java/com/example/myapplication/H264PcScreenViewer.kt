@@ -43,9 +43,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.max
@@ -54,7 +56,9 @@ private const val DEFAULT_PC_SCREEN_BASE_URL = "http://127.0.0.1:7878"
 private const val PC_SCREEN_LOG_TAG = "SCFT-PC-SCREEN"
 private const val READ_BUFFER_BYTES = 32 * 1024
 private const val DEFAULT_PENDING_H264_BYTES = 768 * 1024
-private const val MAX_INPUT_NALS_PER_CYCLE = 32
+// Keep decoder input paced. A large burst makes latest-only rendering discard
+// otherwise valid frames and inflates dropped-frame telemetry.
+private const val MAX_ACCESS_UNITS_PER_CYCLE = 1
 
 private fun cleanPcBaseUrl(value: String): String {
     return value.trim()
@@ -78,6 +82,16 @@ private val PC_SCREEN_PRESETS = listOf(
     PcScreenPreset("adaptive_2k", "2K", 2048, 1280, "16M", DEFAULT_PENDING_H264_BYTES, 30, true)
 )
 
+private enum class PcViewerState {
+    Idle,
+    WaitingForSurface,
+    Connecting,
+    Streaming,
+    Recovering,
+    Error,
+    Stopped
+}
+
 private data class PcScreenPreset(
     val id: String,
     val label: String,
@@ -86,7 +100,7 @@ private data class PcScreenPreset(
     val bitrate: String,
     val pendingLimitBytes: Int,
     val initialFps: Int,
-    val renderLatestOnly: Boolean = false
+    val renderLatestOnly: Boolean = true
 ) {
     fun dimensions(aspect: String): Pair<Int, Int> {
         return if ("16:10" == aspect) width to height else when (id) {
@@ -96,32 +110,28 @@ private data class PcScreenPreset(
         }
     }
 
-    fun streamUrl(baseUrl: String, displayIndex: Int, displayId: String, sessionId: String, aspect: String, fps: Int): String {
+    fun streamUrl(baseUrl: String, displayIndex: Int, displayId: String, sessionId: String, generation: Long, aspect: String, fps: Int): String {
         val (streamWidth, streamHeight) = dimensions(aspect)
         val stableDisplay = if (displayId.isBlank()) "" else "&displayId=${Uri.encode(displayId)}"
         val stableSession = if (sessionId.isBlank()) "" else "&sessionId=${Uri.encode(sessionId)}"
-        return "${cleanPcBaseUrl(baseUrl)}/api/screen/stream?display=$displayIndex$stableDisplay$stableSession&fps=$fps&format=h264&preset=$id&aspect=$aspect&width=$streamWidth&height=$streamHeight&bitrate=$bitrate"
+        val stableGeneration = if (generation <= 0L) "" else "&generation=$generation"
+        return "${cleanPcBaseUrl(baseUrl)}/api/screen/stream?display=$displayIndex$stableDisplay$stableSession$stableGeneration&fps=$fps&format=h264&preset=$id&aspect=$aspect&width=$streamWidth&height=$streamHeight&bitrate=$bitrate"
     }
 }
 
 @Composable
-fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, displayId: String = "", baseUrl: String = DEFAULT_PC_SCREEN_BASE_URL, initialPresetId: String? = null, sessionId: String = "", autoStart: Boolean = false, onBack: () -> Unit) {
-    var fallback by remember { mutableStateOf(false) }
+fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, displayId: String = "", baseUrl: String = DEFAULT_PC_SCREEN_BASE_URL, initialPresetId: String? = null, sessionId: String = "", generation: Long = 0L, attempt: Int = 1, autoStart: Boolean = false, onBack: () -> Unit) {
     var serverBaseUrl by remember { mutableStateOf(baseUrl) }
-    if (fallback) {
-        JpegPcScreenViewerScreen(modifier, displayIndex, serverBaseUrl, onBack)
-    } else {
-        H264PcScreenViewer(modifier, displayIndex, displayId, serverBaseUrl, initialPresetId, sessionId, autoStart, onBack, { serverBaseUrl = it }) { fallback = true }
-    }
+    H264PcScreenViewer(modifier, displayIndex, displayId, serverBaseUrl, initialPresetId, sessionId, generation, attempt, autoStart, onBack, { serverBaseUrl = it })
 }
 
 @Composable
-private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId: String, baseUrl: String, initialPresetId: String?, sessionId: String, autoStart: Boolean, onBack: () -> Unit, onBaseUrlChanged: (String) -> Unit, onFallback: () -> Unit) {
+private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId: String, baseUrl: String, initialPresetId: String?, sessionId: String, generation: Long, attempt: Int, autoStart: Boolean, onBack: () -> Unit, onBaseUrlChanged: (String) -> Unit) {
     val view = LocalView.current
     var holder by remember { mutableStateOf<SurfaceHolder?>(null) }
     var player by remember { mutableStateOf<LowLatencyH264Player?>(null) }
-    var streaming by remember { mutableStateOf(false) }
-    var connecting by remember { mutableStateOf(false) }
+    var viewerState by remember { mutableStateOf(PcViewerState.Idle) }
+    var playerToken by remember { mutableStateOf(0) }
     var status by remember { mutableStateOf("S\u1eb5n s\u00e0ng nh\u1eadn m\u00e0n h\u00ecnh PC qua USB ho\u1eb7c LAN.") }
     var metrics by remember { mutableStateOf("") }
     var serverUrl by remember { mutableStateOf(baseUrl) }
@@ -131,11 +141,11 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
     val screenAspect = remember { phoneScreenAspect() }
     val streamDimensions = preset.dimensions(screenAspect)
 
-    fun stopStream() {
+    fun stopStream(nextState: PcViewerState = PcViewerState.Stopped) {
+        playerToken += 1
         player?.stop()
         player = null
-        streaming = false
-        connecting = false
+        viewerState = nextState
         metrics = ""
                 status = "\u0110\u00e3 k\u1ebft th\u00fac chi\u1ebfu m\u00e0n h\u00ecnh."
     }
@@ -143,11 +153,14 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
     fun startStream() {
         val surface = holder?.surface
         if (surface == null || !surface.isValid) {
+            viewerState = PcViewerState.WaitingForSurface
             status = "\u0110ang chu\u1ea9n b\u1ecb m\u00e0n h\u00ecnh..."
             return
         }
         stopStream()
-        connecting = true
+        val token = playerToken + 1
+        playerToken = token
+        viewerState = PcViewerState.Connecting
         status = "\u0110ang k\u1ebft n\u1ed1i m\u00e0n h\u00ecnh PC..."
         player = LowLatencyH264Player(
             surface = surface,
@@ -155,45 +168,57 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
             displayIndex = displayIndex,
             displayId = displayId,
             sessionId = sessionId,
+            generation = generation,
+            attempt = attempt,
             baseUrl = serverUrl,
             fps = streamFps,
             streamWidth = streamDimensions.first,
             streamHeight = streamDimensions.second,
             onStarted = {
-                connecting = false
-                streaming = true
-                controlsVisible = false
-                status = ""
+                if (token == playerToken) {
+                    viewerState = PcViewerState.Streaming
+                    controlsVisible = false
+                    status = ""
+                }
             },
             onStopped = {
-                connecting = false
-                streaming = false
-                status = "\u0110\u00e3 k\u1ebft th\u00fac chi\u1ebfu m\u00e0n h\u00ecnh."
+                if (token == playerToken) {
+                    if (viewerState != PcViewerState.Error) {
+                        viewerState = PcViewerState.Stopped
+                        status = "\u0110\u00e3 k\u1ebft th\u00fac chi\u1ebfu m\u00e0n h\u00ecnh."
+                    }
+                }
             },
             onStats = {
-                metrics = it
+                if (token == playerToken) metrics = it
             },
             onError = {
-                connecting = false
-                streaming = false
-                onFallback()
-            },
-            onAdaptiveFps = { nextFps ->
-                if (preset.id == "adaptive_2k" && nextFps != streamFps) {
-                    streamFps = nextFps
-                    startStream()
+                if (token == playerToken) {
+                    viewerState = PcViewerState.Recovering
+                    controlsVisible = true
+                    status = "\u0110ang th\u1eed k\u1ebft n\u1ed1i l\u1ea1i H264..."
                 }
-            }
+            },
         ).also { it.start() }
     }
 
+    LaunchedEffect(viewerState, playerToken) {
+        if (viewerState == PcViewerState.Recovering) {
+            delay(1000)
+            if (viewerState == PcViewerState.Recovering) {
+                viewerState = PcViewerState.Error
+                status = "Kh\u00f4ng th\u1ec3 k\u1ebft n\u1ed1i H264. H\u00e3y th\u1eed l\u1ea1i t\u1eeb PC."
+            }
+        }
+    }
+
     LaunchedEffect(holder, autoStart) {
-        if (autoStart && holder?.surface?.isValid == true && !streaming && !connecting) {
+        if (autoStart && holder?.surface?.isValid == true && viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
             // The activity requests landscape above; wait for the final SurfaceView
             // instance after rotation before binding MediaCodec to it.
             val stableHolder = holder
             delay(350)
-            if (stableHolder == holder && stableHolder?.surface?.isValid == true && !streaming && !connecting) {
+            if (stableHolder == holder && stableHolder?.surface?.isValid == true && viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
                 startStream()
             }
         }
@@ -235,7 +260,13 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
 
                         override fun surfaceDestroyed(surfaceHolder: SurfaceHolder) {
                             holder = null
-                            stopStream()
+                            if (viewerState == PcViewerState.Error) {
+                                playerToken += 1
+                                player?.stop()
+                                player = null
+                            } else {
+                                stopStream(PcViewerState.WaitingForSurface)
+                            }
                         }
                     })
                 }
@@ -243,7 +274,7 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
             modifier = Modifier.fillMaxSize()
         )
 
-        if (!streaming) {
+        if (viewerState != PcViewerState.Streaming) {
             Text(
                 text = status,
                 color = Color.White,
@@ -253,7 +284,7 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
             )
         }
 
-        if (controlsVisible && streaming && metrics.isNotBlank()) {
+        if (controlsVisible && viewerState == PcViewerState.Streaming && metrics.isNotBlank()) {
             Text(
                 text = metrics,
                 color = Color.White,
@@ -272,7 +303,7 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (!streaming && !connecting) {
+            if (viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
                 OutlinedTextField(
                     value = serverUrl,
                     onValueChange = {
@@ -283,7 +314,7 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
                     singleLine = true
                 )
             }
-            if (!streaming && !connecting) {
+            if (viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PC_SCREEN_PRESETS.forEach { item ->
                         if (item == preset) {
@@ -295,10 +326,10 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { startStream() }, enabled = !streaming && !connecting) {
+                Button(onClick = { startStream() }, enabled = viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
                     Text("B\u1eaft \u0111\u1ea7u")
                 }
-                OutlinedButton(onClick = { stopStream() }, enabled = streaming || connecting) {
+                OutlinedButton(onClick = { stopStream() }, enabled = viewerState == PcViewerState.Streaming || viewerState == PcViewerState.Connecting) {
                     Text("K\u1ebft th\u00fac")
                 }
                 OutlinedButton(onClick = {
@@ -318,6 +349,8 @@ private class LowLatencyH264Player(
     private val displayIndex: Int,
     private val displayId: String,
     private val sessionId: String,
+    private val generation: Long,
+    private val attempt: Int,
     private val baseUrl: String,
     private val fps: Int,
     private val streamWidth: Int,
@@ -325,19 +358,21 @@ private class LowLatencyH264Player(
     private val onStarted: () -> Unit,
     private val onStopped: () -> Unit,
     private val onStats: (String) -> Unit,
-    private val onError: () -> Unit,
-    private val onAdaptiveFps: (Int) -> Unit
+    private val onError: (String) -> Unit
 ) {
     private val running = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var thread: Thread? = null
+    @Volatile private var readerThread: Thread? = null
     private var latencyThread: Thread? = null
     @Volatile private var latestNetworkRttMs = -1L
     private var connection: HttpURLConnection? = null
     private var codec: MediaCodec? = null
+    private val transportReadWaitMs = AtomicLong(0L)
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        Log.d(PC_SCREEN_LOG_TAG, "start session=$sessionId generation=$generation attempt=$attempt preset=${preset.id} display=$displayIndex")
         thread = Thread(::run, "scft-low-latency-h264").also { it.start() }
         latencyThread = Thread(::runLatencyProbe, "scft-screen-rtt").also { it.start() }
     }
@@ -345,6 +380,15 @@ private class LowLatencyH264Player(
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         closeResources()
+        val worker = thread
+        if (worker != null && worker !== Thread.currentThread()) {
+            worker.interrupt()
+            try {
+                worker.join(300)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
         post(onStopped)
     }
 
@@ -367,25 +411,31 @@ private class LowLatencyH264Player(
                 decoder.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_LOW_LATENCY, 1) })
             }
             val aspect = if (streamWidth.toFloat() / streamHeight.toFloat() > 1.7f) "16:9" else "16:10"
-            val http = URL(preset.streamUrl(baseUrl, displayIndex, displayId, sessionId, aspect, fps)).openConnection() as HttpURLConnection
+            val http = URL(preset.streamUrl(baseUrl, displayIndex, displayId, sessionId, generation, aspect, fps)).openConnection() as HttpURLConnection
             connection = http
-            http.connectTimeout = 2500
-            http.readTimeout = 2500
+            http.connectTimeout = 5000
+            http.readTimeout = 10000
             http.useCaches = false
             http.doInput = true
             http.connect()
             if (http.responseCode !in 200..299) throw IllegalStateException("Stream HTTP ${http.responseCode}")
+            val captureSetupMs = http.getHeaderField("X-SCFT-Capture-Setup-Ms")?.toLongOrNull() ?: -1L
+            val encodeSetupMs = http.getHeaderField("X-SCFT-Encode-Setup-Ms")?.toLongOrNull() ?: -1L
 
             val chunks = EncodedChunkQueue(preset.pendingLimitBytes)
             val readerDone = AtomicBoolean(false)
+            var lastDataAt = SystemClock.elapsedRealtime()
             val reader = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
                 try {
                     http.inputStream.use { input ->
                         val readBuffer = ByteArray(READ_BUFFER_BYTES)
                         while (running.get()) {
+                            val readStartedAt = SystemClock.elapsedRealtime()
                             val read = input.read(readBuffer)
+                            transportReadWaitMs.addAndGet(SystemClock.elapsedRealtime() - readStartedAt)
                             if (read <= 0) break
+                            lastDataAt = SystemClock.elapsedRealtime()
                             chunks.push(readBuffer.copyOf(read))
                         }
                     }
@@ -395,6 +445,7 @@ private class LowLatencyH264Player(
                     chunks.close()
                 }
             }, "scft-h264-reader")
+            readerThread = reader
             reader.start()
 
             val nalBuffer = NalBuffer()
@@ -403,19 +454,21 @@ private class LowLatencyH264Player(
             var renderedThisSecond = 0
             var queuedThisSecond = 0
             var droppedThisSecond = 0
+            var droppedNalUnitsThisSecond = 0
+            var decodeNanosThisSecond = 0L
+            var renderNanosThisSecond = 0L
             var maxBacklogKbThisSecond = 0
             var lastStatsAt = SystemClock.elapsedRealtime()
-            var stableSeconds = 0
-            var overloadedSeconds = 0
             var firstFrameReported = false
             while (running.get() && (!readerDone.get() || chunks.hasPending() || nalBuffer.size > 0)) {
                 drainLatest(decoder).also {
                     renderedThisSecond += it.renderedFrames
                     droppedThisSecond += it.droppedFrames
+                    renderNanosThisSecond += it.renderNanos
                     if (!firstFrameReported && it.renderedFrames > 0) {
                         firstFrameReported = true
                         post(onStarted)
-                        sendTelemetry("streaming", 1, it.droppedFrames, 0)
+                        sendTelemetry("streaming", 1, it.droppedFrames, 0, 0, 0, "", captureSetupMs, encodeSetupMs, transportReadWaitMs.get(), 0L, it.renderNanos / 1_000_000L)
                     }
                 }
                 val chunk = chunks.pop(4)
@@ -423,16 +476,21 @@ private class LowLatencyH264Player(
                     bytesThisSecond += chunk.size.toLong()
                     nalBuffer.append(chunk, chunk.size)
                     if (nalBuffer.size > preset.pendingLimitBytes) {
-                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(preset.pendingLimitBytes / 3)
+                        droppedNalUnitsThisSecond += nalBuffer.keepLatestKeyframeOrTail(preset.pendingLimitBytes / 3)
                     }
+                    val decodeStartedAt = System.nanoTime()
                     val result = feedAvailableNalUnits(decoder, nalBuffer, ptsUs)
+                    decodeNanosThisSecond += System.nanoTime() - decodeStartedAt
                     ptsUs = result.nextPtsUs
                     queuedThisSecond += result.queuedFrames
                     renderedThisSecond += result.renderedFrames
                     droppedThisSecond += result.droppedFrames
+                    renderNanosThisSecond += result.renderNanos
                     if (nalBuffer.size > preset.pendingLimitBytes) {
-                        droppedThisSecond += nalBuffer.keepLatestKeyframeOrTail(preset.pendingLimitBytes / 3)
+                        droppedNalUnitsThisSecond += nalBuffer.keepLatestKeyframeOrTail(preset.pendingLimitBytes / 3)
                     }
+                } else if (firstFrameReported && SystemClock.elapsedRealtime() - lastDataAt > 5000L) {
+                    throw SocketTimeoutException("Kh\u00f4ng nh\u1eadn d\u1eef li\u1ec7u H264 qu\u00e1 5 gi\u00e2y")
                 }
 
                 maxBacklogKbThisSecond = max(maxBacklogKbThisSecond, (chunks.pendingBytes() + nalBuffer.size) / 1024)
@@ -440,30 +498,21 @@ private class LowLatencyH264Player(
                 if (now - lastStatsAt >= 1000L) {
                     val kbps = bytesThisSecond / 1024L
                     val net = if (latestNetworkRttMs >= 0L) "${latestNetworkRttMs} ms" else "-"
-                    val stats = "${preset.label} ${streamWidth}x${streamHeight} | ${renderedThisSecond} FPS | ${queuedThisSecond} frame | ${droppedThisSecond} drop | ${kbps} KB/s | buf ${maxBacklogKbThisSecond} KB | net ${net}"
-                    Log.d(PC_SCREEN_LOG_TAG, stats)
+                    val usbMs = transportReadWaitMs.getAndSet(0L)
+                    val decodeMs = decodeNanosThisSecond / 1_000_000L
+                    val renderMs = renderNanosThisSecond / 1_000_000L
+                    val stats = "${preset.label} ${streamWidth}x${streamHeight} | ${renderedThisSecond} FPS | ${queuedThisSecond} frame | ${droppedThisSecond} drop | nal ${droppedNalUnitsThisSecond} | ${kbps} KB/s | buf ${maxBacklogKbThisSecond} KB | net ${net} | cap ${captureSetupMs}ms enc ${encodeSetupMs}ms usb ${usbMs}ms dec ${decodeMs}ms ren ${renderMs}ms"
+                    Log.d(PC_SCREEN_LOG_TAG, "session=$sessionId generation=$generation attempt=$attempt $stats")
                     post { onStats(stats) }
-                    sendTelemetry("streaming", renderedThisSecond, droppedThisSecond, maxBacklogKbThisSecond / 32)
-                    if (preset.id == "adaptive_2k") {
-                        if (fps == 45 && renderedThisSecond >= 43 && droppedThisSecond <= 1) stableSeconds++ else stableSeconds = 0
-                        if (renderedThisSecond < (if (fps >= 45) 40 else 27) || droppedThisSecond > 3) overloadedSeconds++ else overloadedSeconds = 0
-                        if (fps == 45 && stableSeconds >= 8) {
-                            post { onAdaptiveFps(60) }
-                            break
-                        }
-                        if (fps == 60 && overloadedSeconds >= 4) {
-                            post { onAdaptiveFps(45) }
-                            break
-                        }
-                        if (fps == 45 && overloadedSeconds >= 5) {
-                            post { onAdaptiveFps(30) }
-                            break
-                        }
-                    }
+                    val decoderQueueDepth = chunks.pendingCount()
+                    sendTelemetry("streaming", renderedThisSecond, droppedThisSecond, decoderQueueDepth, maxBacklogKbThisSecond * 1024L, decoderQueueDepth, "", captureSetupMs, encodeSetupMs, usbMs, decodeMs, renderMs)
                     bytesThisSecond = 0L
                     renderedThisSecond = 0
                     queuedThisSecond = 0
                     droppedThisSecond = 0
+                    droppedNalUnitsThisSecond = 0
+                    decodeNanosThisSecond = 0L
+                    renderNanosThisSecond = 0L
                     maxBacklogKbThisSecond = 0
                     lastStatsAt = now
                 }
@@ -471,14 +520,19 @@ private class LowLatencyH264Player(
 
         } catch (error: Exception) {
             failed = true
-            Log.e(PC_SCREEN_LOG_TAG, "H264 stream failed for display $displayIndex at $baseUrl", error)
-            sendTelemetry("error", 0, 0, 0)
-            if (running.get()) post(onError)
+            Log.e(PC_SCREEN_LOG_TAG, "H264 stream failed session=$sessionId generation=$generation attempt=$attempt preset=${preset.id} display=$displayIndex", error)
+            sendTelemetry(
+                "error", 0, 0, 0, 0, 0,
+                if (error is SocketTimeoutException) "STREAM_STALLED" else "DECODER_ERROR"
+            )
+            if (running.get()) post { onError(error.message ?: "L\u1ed7i kh\u00f4ng x\u00e1c \u0111\u1ecbnh") }
         } finally {
             if (running.getAndSet(false)) {
                 closeResources()
-                sendTelemetry("stopped", 0, 0, 0)
-                if (!failed) post(onStopped)
+                if (!failed) {
+                    sendTelemetry("error", 0, 0, 0, 0, 0, "STREAM_STALLED")
+                    post { onError("Luồng H264 đã kết thúc bất thường") }
+                }
             }
         }
     }
@@ -495,16 +549,29 @@ private class LowLatencyH264Player(
         }
     }
 
-    private fun sendTelemetry(state: String, fpsValue: Int, droppedValue: Int, queueValue: Int) {
+    private fun sendTelemetry(state: String, fpsValue: Int, droppedValue: Int, queueValue: Int, bufferBytes: Long, decoderQueueDepth: Int, errorCode: String = "") {
+        sendTelemetry(state, fpsValue, droppedValue, queueValue, bufferBytes, decoderQueueDepth, errorCode, -1L, -1L, -1L, -1L, -1L)
+    }
+
+    private fun sendTelemetry(state: String, fpsValue: Int, droppedValue: Int, queueValue: Int, bufferBytes: Long, decoderQueueDepth: Int, errorCode: String, captureSetupMs: Long, encodeSetupMs: Long, usbTransferMs: Long, decodeMs: Long, renderMs: Long) {
         if (sessionId.isBlank()) return
         var telemetry: HttpURLConnection? = null
         try {
             val query = ("sessionId=${Uri.encode(sessionId)}"
+                + "&generation=$generation"
                 + "&state=${Uri.encode(state)}"
                 + "&preset=${Uri.encode(preset.id)}"
                 + "&fps=$fpsValue"
                 + "&dropped=$droppedValue"
                 + "&queue=$queueValue"
+                + "&bufferBytes=$bufferBytes"
+                + "&decoderQueueDepth=$decoderQueueDepth"
+                + "&captureSetupMs=$captureSetupMs"
+                + "&encodeSetupMs=$encodeSetupMs"
+                + "&usbTransferMs=$usbTransferMs"
+                + "&decodeMs=$decodeMs"
+                + "&renderMs=$renderMs"
+                + if (errorCode.isBlank()) "" else "&errorCode=${Uri.encode(errorCode)}"
                 + "&rtt=$latestNetworkRttMs")
             telemetry = URL("${cleanPcBaseUrl(baseUrl)}/api/screen/telemetry?$query").openConnection() as HttpURLConnection
             telemetry.requestMethod = "POST"
@@ -550,15 +617,16 @@ private class LowLatencyH264Player(
         var rendered = 0
         var queued = 0
         var dropped = 0
+        var renderNanos = 0L
         var first = findStartCode(buffer.data, 0, buffer.size)
         if (first < 0) {
             buffer.keepTail(4)
-            return FeedResult(ptsUs, rendered, queued, 0)
+            return FeedResult(ptsUs, rendered, queued, 0, 0L)
         }
         var accessUnitStart = first
         var cursor = first
         var next = findStartCode(buffer.data, cursor + startCodeLength(buffer.data, cursor, buffer.size), buffer.size)
-        while (next >= 0 && running.get() && queued < MAX_INPUT_NALS_PER_CYCLE) {
+        while (next >= 0 && running.get() && queued < MAX_ACCESS_UNITS_PER_CYCLE) {
             val nalPayload = cursor + startCodeLength(buffer.data, cursor, buffer.size)
             val nalType = if (nalPayload < buffer.size) buffer.data[nalPayload].toInt() and 0x1F else -1
             if (nalType == 9 && cursor > accessUnitStart) {
@@ -566,52 +634,58 @@ private class LowLatencyH264Player(
                 queued += queueResult.queuedFrames
                 rendered += queueResult.renderedFrames
                 dropped += queueResult.droppedFrames
+                renderNanos += queueResult.renderNanos
                 ptsUs += 1_000_000L / fps
                 accessUnitStart = cursor
             }
             cursor = next
             next = findStartCode(buffer.data, cursor + startCodeLength(buffer.data, cursor, buffer.size), buffer.size)
         }
-        if (next >= 0 && cursor > accessUnitStart && queued < MAX_INPUT_NALS_PER_CYCLE) {
+        if (next >= 0 && cursor > accessUnitStart && queued < MAX_ACCESS_UNITS_PER_CYCLE) {
             val queueResult = queue(decoder, buffer.data, accessUnitStart, cursor - accessUnitStart, ptsUs)
             queued += queueResult.queuedFrames
             rendered += queueResult.renderedFrames
             dropped += queueResult.droppedFrames
+            renderNanos += queueResult.renderNanos
             ptsUs += 1_000_000L / fps
             accessUnitStart = cursor
         }
         buffer.dropBefore(accessUnitStart)
-        return FeedResult(ptsUs, rendered, queued, dropped)
+        return FeedResult(ptsUs, rendered, queued, dropped, renderNanos)
     }
 
     private fun queue(decoder: MediaCodec, data: ByteArray, offset: Int, size: Int, ptsUs: Long): QueueResult {
         var attempts = 0
         var rendered = 0
         var dropped = 0
+        var renderNanos = 0L
         while (running.get() && attempts < 8) {
             val index = decoder.dequeueInputBuffer(0)
             if (index >= 0) {
-                val input = decoder.getInputBuffer(index) ?: return QueueResult(rendered, 0, dropped)
+                val input = decoder.getInputBuffer(index) ?: return QueueResult(rendered, 0, dropped, renderNanos)
                 input.clear()
-                if (size > input.remaining()) return QueueResult(rendered, 0, dropped)
+                if (size > input.remaining()) return QueueResult(rendered, 0, dropped, renderNanos)
                 input.put(data, offset, size)
                 decoder.queueInputBuffer(index, 0, size, ptsUs, 0)
                 drainLatest(decoder).also {
                     rendered += it.renderedFrames
                     dropped += it.droppedFrames
+                    renderNanos += it.renderNanos
                 }
-                return QueueResult(rendered, 1, dropped)
+                return QueueResult(rendered, 1, dropped, renderNanos)
             }
             drainLatest(decoder).also {
                 rendered += it.renderedFrames
                 dropped += it.droppedFrames
+                renderNanos += it.renderNanos
             }
             attempts++
         }
-        return QueueResult(rendered, 0, dropped)
+        return QueueResult(rendered, 0, dropped, renderNanos)
     }
 
     private fun drainLatest(decoder: MediaCodec): DrainResult {
+        val renderStartedAt = System.nanoTime()
         val info = MediaCodec.BufferInfo()
         val ready = ArrayList<Int>(4)
         while (running.get()) {
@@ -628,16 +702,16 @@ private class LowLatencyH264Player(
                 break
             }
         }
-        if (ready.isEmpty()) return DrainResult(0, 0)
+        if (ready.isEmpty()) return DrainResult(0, 0, 0L)
         if (!preset.renderLatestOnly && ready.size <= 2) {
             ready.forEach { decoder.releaseOutputBuffer(it, true) }
-            return DrainResult(ready.size, 0)
+            return DrainResult(ready.size, 0, System.nanoTime() - renderStartedAt)
         }
         for (i in 0 until ready.lastIndex) {
             decoder.releaseOutputBuffer(ready[i], false)
         }
         decoder.releaseOutputBuffer(ready.last(), true)
-        return DrainResult(1, ready.size - 1)
+        return DrainResult(1, ready.size - 1, System.nanoTime() - renderStartedAt)
     }
 
     private fun closeResources() {
@@ -646,6 +720,16 @@ private class LowLatencyH264Player(
         } catch (_: Exception) {
         }
         connection = null
+        val reader = readerThread
+        readerThread = null
+        if (reader != null && reader !== Thread.currentThread()) {
+            reader.interrupt()
+            try {
+                reader.join(250)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
         try {
             codec?.stop()
         } catch (_: Exception) {
@@ -677,11 +761,11 @@ private class LowLatencyH264Player(
         mainHandler.post(action)
     }
 
-    private data class FeedResult(val nextPtsUs: Long, val renderedFrames: Int, val queuedFrames: Int, val droppedFrames: Int)
+    private data class FeedResult(val nextPtsUs: Long, val renderedFrames: Int, val queuedFrames: Int, val droppedFrames: Int, val renderNanos: Long)
 
-    private data class QueueResult(val renderedFrames: Int, val queuedFrames: Int, val droppedFrames: Int)
+    private data class QueueResult(val renderedFrames: Int, val queuedFrames: Int, val droppedFrames: Int, val renderNanos: Long)
 
-    private data class DrainResult(val renderedFrames: Int, val droppedFrames: Int)
+    private data class DrainResult(val renderedFrames: Int, val droppedFrames: Int, val renderNanos: Long)
 
     private class EncodedChunkQueue(private val maxBytes: Int) {
         private val lock = Object()
@@ -719,6 +803,12 @@ private class LowLatencyH264Player(
         fun pendingBytes(): Int {
             synchronized(lock) {
                 return bytes
+            }
+        }
+
+        fun pendingCount(): Int {
+            synchronized(lock) {
+                return chunks.size
             }
         }
 

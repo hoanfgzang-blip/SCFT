@@ -50,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -99,6 +100,8 @@ class MainActivity : ComponentActivity() {
                     initialBaseUrl = source.getStringExtra("scft_base_url") ?: "http://127.0.0.1:7878",
                     initialPresetId = source.getStringExtra("scft_preset"),
                     initialSessionId = source.getStringExtra("scft_session_id") ?: "",
+                    initialGeneration = source.getLongExtra("scft_generation", 0L),
+                    initialAttempt = source.getIntExtra("scft_attempt", 1),
                     autoStart = source.getBooleanExtra("scft_autostart", false),
                     modifier = Modifier.fillMaxSize()
                 )
@@ -119,11 +122,15 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun ScftApp(initialScreen: String?, initialDisplay: Int, initialDisplayId: String, initialBaseUrl: String, initialPresetId: String?, initialSessionId: String, autoStart: Boolean, modifier: Modifier = Modifier) {
-    var currentScreen by rememberSaveable { mutableStateOf(if (initialScreen == "pc") "pc" else "transfer") }
+fun ScftApp(initialScreen: String?, initialDisplay: Int, initialDisplayId: String, initialBaseUrl: String, initialPresetId: String?, initialSessionId: String, initialGeneration: Long, initialAttempt: Int, autoStart: Boolean, modifier: Modifier = Modifier) {
+    var currentScreen by rememberSaveable(initialScreen, initialSessionId, initialGeneration) {
+        mutableStateOf(if (initialScreen == "pc") "pc" else "transfer")
+    }
 
     if (currentScreen == "pc") {
-        PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, displayId = initialDisplayId, baseUrl = initialBaseUrl, initialPresetId = initialPresetId, sessionId = initialSessionId, autoStart = autoStart, onBack = { currentScreen = "transfer" })
+        key(initialSessionId, initialGeneration, initialPresetId) {
+            PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, displayId = initialDisplayId, baseUrl = initialBaseUrl, initialPresetId = initialPresetId, sessionId = initialSessionId, generation = initialGeneration, attempt = initialAttempt, autoStart = autoStart, onBack = { currentScreen = "transfer" })
+        }
         return
     }
 

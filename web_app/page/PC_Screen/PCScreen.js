@@ -1,7 +1,4 @@
-const { execFile } = require("child_process");
 const { ipcRenderer } = require("electron");
-const os = require("os");
-const path = require("path");
 
 const BACKEND_URL = "http://127.0.0.1:7878";
 const SESSION_POLL_MS = 300;
@@ -14,8 +11,12 @@ const state = {
     sessionTimer: null,
     backendRetryTimer: null,
     backendRetryCount: 0,
+    warmupRequested: false,
     adbPath: null,
     applying: false,
+    operationStep: "idle",
+    operationMessage: "",
+    lastErrorCode: "",
     sessionId: "",
     activeSession: null,
     draft: {
@@ -59,6 +60,21 @@ function bindEvents() {
     elements.openButton.addEventListener("click", applyDraft);
     elements.repairButton.addEventListener("click", repairVirtualDisplay);
     elements.stopButton.addEventListener("click", stopPhoneViewer);
+    ipcRenderer.on("scft-pc-screen-progress", (_event, progress) => {
+        state.operationStep = progress?.step || "working";
+        state.operationMessage = progress?.message || "";
+        if (progress?.step === "streaming") {
+            state.lastErrorCode = "";
+            startSessionPolling();
+            pollSessionOnce();
+            setMessage(progress.message, "success");
+        } else if (progress?.step === "stopped") {
+            setMessage(progress.message, "success");
+        } else if (progress?.message) {
+            setMessage(progress.message, "success");
+        }
+        updateControls();
+    });
     elements.displaySelect.addEventListener("change", () => {
         state.draft.displayIndex = Number(elements.displaySelect.value) || 0;
         const selected = [...elements.displaySelect.options]
@@ -72,49 +88,8 @@ function bindEvents() {
         state.draft.presetId = elements.presetSelect.value || "balanced";
         updateControls();
     });
-    elements.copyUsbButton.addEventListener("click", () => copyText(state.usbUrl));
-    elements.copyLanButton.addEventListener("click", () => copyText(state.lanUrl));
-}
-
-function getAdbCandidates() {
-    const localAppData = process.env.LOCALAPPDATA;
-    const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
-    const candidates = [
-        process.env.SCFT_ADB_PATH,
-        localAppData && path.join(localAppData, "Android", "Sdk", "platform-tools", "adb.exe"),
-        androidHome && path.join(androidHome, "platform-tools", "adb.exe"),
-        path.join(os.homedir(), "AppData", "Local", "Android", "Sdk", "platform-tools", "adb.exe"),
-        path.join(process.resourcesPath || "", "platform-tools", "adb.exe"),
-        "adb.exe",
-        "adb"
-    ];
-    return [...new Set(candidates.filter(Boolean))];
-}
-
-function runAdb(args) {
-    const candidates = state.adbPath ? [state.adbPath] : getAdbCandidates();
-    return new Promise((resolve, reject) => {
-        function tryCandidate(index) {
-            if (index >= candidates.length) {
-                reject(new Error("Không tìm thấy ADB."));
-                return;
-            }
-            const command = candidates[index];
-            execFile(command, args, { windowsHide: true }, (error, stdout, stderr) => {
-                if (error && error.code === "ENOENT") {
-                    tryCandidate(index + 1);
-                    return;
-                }
-                if (error) {
-                    reject(new Error(stderr || error.message));
-                    return;
-                }
-                state.adbPath = command;
-                resolve(stdout);
-            });
-        }
-        tryCandidate(0);
-    });
+    if (elements.copyUsbButton) elements.copyUsbButton.addEventListener("click", () => copyText(state.usbUrl));
+    if (elements.copyLanButton) elements.copyLanButton.addEventListener("click", () => copyText(state.lanUrl));
 }
 
 function draftConfig() {
@@ -133,95 +108,78 @@ function configEquals(left, right) {
 }
 
 function hasActiveSession() {
-    return ["applying", "connecting", "streaming"].includes(state.activeSession?.state);
+    return ["applying", "connecting", "streaming", "recovering"].includes(state.activeSession?.state);
+}
+
+function reduceUiState() {
+    if (!state.online) return "offline";
+    if (state.applying) return state.operationStep || "preparing";
+    if (state.activeSession?.state === "streaming") return "streaming";
+    if (state.activeSession?.state === "recovering") return "recovering";
+    if (state.activeSession?.state === "error" || state.lastErrorCode) return "error";
+    return "idle";
 }
 
 function updateControls() {
     if (!elements.openButton) return;
+    state.uiState = reduceUiState();
     const active = hasActiveSession();
     const dirty = !configEquals(draftConfig(), activeConfig());
-    elements.openButton.textContent = active ? "Áp dụng" : "Bắt đầu";
+    const failed = state.activeSession?.state === "error" || Boolean(state.lastErrorCode);
+    elements.openButton.textContent = active ? "Áp dụng" : (failed ? "Thử lại" : "Bắt đầu");
     elements.openButton.disabled = !state.online || state.applying || (active && !dirty);
     elements.openButton.title = active && !dirty
         ? "Cấu hình này đang được áp dụng"
-        : "Áp dụng cấu hình lên điện thoại";
+        : (failed ? "Thử lại kết nối PC Screen" : "Áp dụng cấu hình lên điện thoại");
     elements.stopButton.hidden = !active && !state.applying;
-    elements.stopButton.disabled = !active || state.applying;
+    elements.stopButton.disabled = !active && !state.applying;
+    elements.stopButton.textContent = state.applying ? "Hủy" : "Kết thúc";
     elements.displaySelect.disabled = !state.online || state.applying;
     elements.presetSelect.disabled = !state.online || state.applying;
 }
 
 async function applyDraft() {
-    if (state.applying || !state.usbUrl) return;
+    if (state.applying || !state.online) return;
     state.applying = true;
+    state.lastErrorCode = "";
     updateControls();
-    setMessage("Đang áp dụng cấu hình lên điện thoại...", "success");
-
-    let sessionId = "";
     try {
-        await ipcRenderer.invoke("scft-virtual-display-start");
-        await refreshScreenShare({ keepMessage: true });
-
-        const devices = await runAdb(["devices"]);
-        const connected = devices.split(/\r?\n/).some(line => /\tdevice$/.test(line.trim()));
-        if (!connected) throw new Error("Chưa có điện thoại ADB được cấp quyền.");
-
-        await runAdb(["reverse", "tcp:7878", "tcp:7878"]);
-        const config = draftConfig();
-        const query = new URLSearchParams({
-            display: String(config.displayIndex),
-            displayId: config.displayId,
-            preset: config.presetId,
-            transport: "usb"
-        });
-        const sessionResponse = await fetch(`${BACKEND_URL}/api/screen/session?${query}`, { method: "POST" });
-        const session = await readJsonResponse(sessionResponse);
-        sessionId = session.sessionId;
-        state.sessionId = sessionId;
+        const session = await ipcRenderer.invoke("scft-pc-screen-apply", draftConfig());
+        state.sessionId = session?.sessionId || "";
         state.activeSession = session;
         startSessionPolling();
-
-        await runAdb([
-            "shell", "am", "start", "-n", "com.example.myapplication/.MainActivity",
-            "--es", "scft_screen", "pc",
-            "--ei", "scft_display", String(config.displayIndex),
-            "--es", "scft_display_id", config.displayId,
-            "--es", "scft_preset", config.presetId,
-            "--es", "scft_session_id", sessionId,
-            "--ez", "scft_autostart", "true",
-            "--es", "scft_base_url", "http://127.0.0.1:7878"
-        ]);
-
-        const streaming = await waitForStreaming(sessionId, 8000);
-        if (streaming) {
-            setMessage("Đã áp dụng và điện thoại đang nhận màn hình PC.", "success");
+        if (session?.effectivePreset && session.effectivePreset !== state.draft.presetId) {
+            setMessage(session.effectivePreset === "zero_latency"
+                ? "Đã chuyển sang Không độ trễ để duy trì kết nối."
+                : `Đã kết nối bằng preset ${session.effectivePreset}.`, "success");
         } else {
-            setMessage("Đã gửi cấu hình nhưng chưa nhận được frame đầu tiên. Kiểm tra trạng thái trên điện thoại.", "error");
+            setMessage("Đã áp dụng và điện thoại đang nhận màn hình PC.", "success");
         }
     } catch (error) {
-        if (sessionId) await deleteSession(sessionId);
+        if (error.code === "PC_SCREEN_STOPPED") {
+            state.sessionId = "";
+            state.activeSession = null;
+            stopSessionPolling();
+            stopPreview();
+            return;
+        }
+        state.lastErrorCode = error.code || "PC_SCREEN_ERROR";
         state.sessionId = "";
         state.activeSession = null;
         setMessage(error.message || "Không thể áp dụng cấu hình.", "error");
     } finally {
         state.applying = false;
+        state.operationStep = "idle";
         updateControls();
     }
 }
 
 async function stopPhoneViewer() {
-    if (state.applying) return;
     state.applying = true;
     updateControls();
     setMessage("Đang dừng chiếu màn hình PC...", "success");
     try {
-        try {
-            await runAdb(["shell", "am", "force-stop", "com.example.myapplication"]);
-        } catch (_) {
-            // The backend session is still stopped when the phone is absent.
-        }
-        await deleteSession(state.sessionId);
-        await ipcRenderer.invoke("scft-virtual-display-stop");
+        await ipcRenderer.invoke("scft-pc-screen-stop");
         state.sessionId = "";
         state.activeSession = null;
         stopSessionPolling();
@@ -236,22 +194,6 @@ async function stopPhoneViewer() {
         state.applying = false;
         updateControls();
     }
-}
-
-async function deleteSession(sessionId) {
-    if (!sessionId) return;
-    await fetch(`${BACKEND_URL}/api/screen/session?sessionId=${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-}
-
-async function waitForStreaming(sessionId, timeoutMs) {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-        await pollSessionOnce();
-        if (state.sessionId === sessionId && state.activeSession?.state === "streaming") return true;
-        if (state.sessionId === sessionId && state.activeSession?.state === "error") return false;
-        await new Promise(resolve => setTimeout(resolve, SESSION_POLL_MS));
-    }
-    return false;
 }
 
 function startSessionPolling() {
@@ -276,7 +218,7 @@ async function pollSessionOnce() {
 }
 
 function syncActiveSession(session) {
-    if (!session || ["stopped", "error"].includes(session.state)) {
+    if (!session || session.state === "stopped") {
         state.activeSession = null;
         if (!state.applying) stopSessionPolling();
         updateControls();
@@ -284,15 +226,35 @@ function syncActiveSession(session) {
     }
     state.activeSession = session;
     state.sessionId = session.sessionId || state.sessionId;
-    if (session.config) {
-        elements.frameStatus.textContent = session.metrics?.fps
-            ? `${session.metrics.fps} FPS · ${session.metrics.dropped || 0} drop · buf ${session.metrics.queue || 0}`
-            : session.state;
+    const droppedFrames = session.metrics?.droppedFrames ?? session.metrics?.dropped ?? 0;
+    if (session.metrics?.fps) {
+        const metrics = session.metrics;
+        const stages = [
+            ["cap", metrics.captureSetupMs],
+            ["enc", metrics.encodeSetupMs],
+            ["usb", metrics.usbTransferMs],
+            ["dec", metrics.decodeMs],
+            ["ren", metrics.renderMs]
+        ].filter(([, value]) => Number.isFinite(value) && value >= 0)
+            .map(([label, value]) => `${label} ${Math.round(value)}ms`)
+            .join(" · ");
+        elements.frameStatus.textContent = `${metrics.fps} FPS · ${droppedFrames} drop · buf ${Math.round((metrics.bufferBytes || 0) / 1024)} KB · q ${metrics.decoderQueueDepth || 0}${stages ? ` · ${stages}` : ""}`;
+    } else {
+        elements.frameStatus.textContent = session.state === "error" ? "Lỗi" : session.state;
     }
-    setStatus(
-        session.state === "streaming" ? "Đang chiếu màn hình PC." : "Đang áp dụng cấu hình...",
-        true
-    );
+    if (session.state === "error") {
+        state.lastErrorCode = session.errorCode || "PC_SCREEN_ERROR";
+        setStatus("PC Screen gặp lỗi.", true);
+        setMessage(session.errorMessage || "Không thể duy trì phiên màn hình.", "error");
+        stopSessionPolling();
+    } else {
+        setStatus(
+            session.state === "streaming"
+                ? "Đang chiếu màn hình PC."
+                : (session.state === "recovering" ? "Đang thử khôi phục H264..." : "Đang áp dụng cấu hình..."),
+            true
+        );
+    }
     updateControls();
 }
 
@@ -323,7 +285,7 @@ async function refreshScreenShare(options = {}) {
         state.backendRetryCount = 0;
         state.online = true;
         syncActiveSession(status.session);
-        if (!hasActiveSession()) {
+        if (!hasActiveSession() && state.activeSession?.state !== "error") {
             setStatus(
                 Number(status.displays || 0) > 1 ? "Màn hình phụ đã sẵn sàng." : "SCFT sẵn sàng tạo màn hình phụ.",
                 true
@@ -331,6 +293,7 @@ async function refreshScreenShare(options = {}) {
             if (!options.keepMessage) setMessage("Chọn cấu hình rồi bấm Bắt đầu.", "success");
         }
         updateControls();
+        requestCaptureWarmup();
         startPreview();
     } catch (error) {
         state.online = false;
@@ -340,6 +303,20 @@ async function refreshScreenShare(options = {}) {
         updateControls();
         scheduleBackendRetry();
     }
+}
+
+function requestCaptureWarmup() {
+    if (state.warmupRequested) return;
+    state.warmupRequested = true;
+    const query = `display=${state.draft.displayIndex}&displayId=${encodeURIComponent(state.draft.displayId)}`;
+    fetch(`${BACKEND_URL}/api/screen/warmup?${query}`, { method: "POST" })
+        .then(async response => {
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                console.warn("PC Screen capture/encoder warm-up failed", body.error || response.status);
+            }
+        })
+        .catch(error => console.warn("PC Screen capture/encoder warm-up unavailable", error));
 }
 
 async function readJsonResponse(response) {
@@ -422,10 +399,10 @@ function updateLinks() {
 function setLinks(usbUrl, lanUrl) {
     state.usbUrl = usbUrl;
     state.lanUrl = lanUrl;
-    elements.usbUrl.textContent = usbUrl || "-";
-    elements.lanUrl.textContent = lanUrl || "-";
-    elements.copyUsbButton.disabled = !usbUrl;
-    elements.copyLanButton.disabled = !lanUrl;
+    elements.usbUrl.textContent = usbUrl ? "USB + ADB reverse sẵn sàng." : "USB + ADB reverse đang kiểm tra...";
+    elements.lanUrl.textContent = lanUrl ? "LAN chỉ dùng cho tương thích, chưa phải luồng H264 chính." : "LAN chưa sẵn sàng.";
+    if (elements.copyUsbButton) elements.copyUsbButton.disabled = !usbUrl;
+    if (elements.copyLanButton) elements.copyLanButton.disabled = !lanUrl;
     updateControls();
 }
 

@@ -46,14 +46,8 @@
 
                         <div class="link-list">
                             <div>
-                                <span>Kết nối USB ADB</span>
-                                <strong id="usb_url_text">-</strong>
-                                <button id="copy_usb_btn" class="link-btn" type="button" disabled>Sao chép</button>
-                            </div>
-                            <div>
-                                <span>Kết nối mạng LAN</span>
-                                <strong id="lan_url_text">-</strong>
-                                <button id="copy_lan_btn" class="link-btn" type="button" disabled>Sao chép</button>
+                                <span>Kết nối chính</span>
+                                <strong id="usb_url_text">USB + ADB reverse đang được kiểm tra...</strong>
                             </div>
                             <div>
                                 <span>Màn hình nguồn</span>
@@ -77,13 +71,17 @@
 
                         <div class="guide-box">
                             <strong>Chế độ USB</strong>
-                            <span>Kết nối điện thoại bằng cáp dữ liệu, bật gỡ lỗi USB và chấp nhận quyền lần đầu. Sau đó chọn chế độ và bấm Bắt đầu trên PC; điện thoại sẽ tự mở và tự phát hình.</span>
+                            <span>Kết nối bằng cáp dữ liệu, bật gỡ lỗi USB và chấp nhận quyền lần đầu. Khi điện thoại đang khóa, hãy tự mở khóa rồi bấm Thử lại.</span>
                         </div>
 
-                        <div class="guide-box">
-                            <strong>Chế độ mạng LAN</strong>
-                            <span>Kết nối điện thoại và PC vào cùng một mạng, sau đó mở địa chỉ LAN trên điện thoại.</span>
-                        </div>
+                        <details class="secondary-connection">
+                            <summary>Kết nối khác</summary>
+                            <div class="secondary-connection-content">
+                                <span>LAN/JPEG tương thích</span>
+                                <strong id="lan_url_text">LAN chưa được tối ưu cho PC Screen H264.</strong>
+                                <span>LAN/JPEG vẫn giữ cho tương thích, nhưng không thuộc luồng màn hình phụ USB H264 hiện tại.</span>
+                            </div>
+                        </details>
 
                         <p id="screen_message" class="status-message"></p>
                     </div>

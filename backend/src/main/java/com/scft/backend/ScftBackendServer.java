@@ -34,6 +34,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 import javax.imageio.IIOImage;
@@ -48,6 +49,8 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
 public final class ScftBackendServer {
+    private static final long SCREEN_START_TIMEOUT_MS = 12_000L;
+    private static final long SCREEN_HEARTBEAT_TIMEOUT_MS = 5_000L;
     private static final int DEFAULT_PORT = 7878;
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final long MAX_UPLOAD_BYTES = 2L * 1024L * 1024L * 1024L;
@@ -62,6 +65,7 @@ public final class ScftBackendServer {
     private final String deviceName;
     private final Map<String, ScreenFrame> screenFrames = new ConcurrentHashMap<>();
     private final ExecutorService screenCaptureExecutor = Executors.newSingleThreadExecutor();
+    private final AtomicLong screenGeneration = new AtomicLong();
     private volatile H264ScreenStreamer activeScreenStreamer;
     private volatile ScreenSession screenSession;
 
@@ -79,6 +83,7 @@ public final class ScftBackendServer {
         this.deviceName = System.getProperty("user.name", "SCFT Desktop");
         Files.createDirectories(uploadDir);
         Files.createDirectories(metadataDir);
+        H264ScreenStreamer.warmUpEncoder();
     }
 
     public static void main(String[] args) throws IOException {
@@ -165,12 +170,15 @@ public final class ScftBackendServer {
         int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
         String displayId = params.getOrDefault("displayId", "");
         String preset = normalizePreset(params.get("preset"));
+        String requestedPreset = normalizePreset(params.getOrDefault("requestedPreset", preset));
         String transport = params.getOrDefault("transport", "usb");
+        int attempt = clampInt(params.get("attempt"), 1, 3, 1);
         ScreenProfile profile = screenProfile(preset, "16:10");
         ScreenSession next = new ScreenSession(
-                UUID.randomUUID().toString(), display, displayId, preset, transport,
+                UUID.randomUUID().toString(), screenGeneration.incrementAndGet(), display, displayId, requestedPreset, preset, transport,
                 profile.width, profile.height, profile.fps, profile.bitrate
         );
+        next.attempt = attempt;
         H264ScreenStreamer previous = activeScreenStreamer;
         activeScreenStreamer = null;
         if (previous != null) previous.close();
@@ -193,8 +201,32 @@ public final class ScftBackendServer {
     }
 
     private String screenSessionJson() {
+        expireScreenSessionIfNeeded();
         ScreenSession current = screenSession;
         return current == null ? "null" : current.toJson();
+    }
+
+    private void expireScreenSessionIfNeeded() {
+        ScreenSession current = screenSession;
+        if (current == null) return;
+        long now = System.currentTimeMillis();
+        long lastActivity = current.updatedAt;
+        long timeout = "streaming".equals(current.state)
+                ? SCREEN_HEARTBEAT_TIMEOUT_MS
+                : SCREEN_START_TIMEOUT_MS;
+        if (("applying".equals(current.state) || "connecting".equals(current.state)
+                || "streaming".equals(current.state) || "recovering".equals(current.state))
+                && now - lastActivity > timeout) {
+            if ("streaming".equals(current.state)) {
+                current.recover("STREAM_STALLED", "Đang thử khôi phục luồng H264...");
+            } else {
+                current.fail("recovering".equals(current.state) ? current.errorCode : "STARTUP_TIMEOUT",
+                        "Không nhận được dữ liệu màn hình trong thời gian cho phép.");
+            }
+            H264ScreenStreamer previous = activeScreenStreamer;
+            activeScreenStreamer = null;
+            if (previous != null) previous.close();
+        }
     }
 
     private void handleFiles(HttpExchange exchange) throws IOException {
@@ -246,6 +278,10 @@ public final class ScftBackendServer {
         }
         if ("POST".equalsIgnoreCase(method) && "/api/screen/telemetry".equals(path)) {
             handleScreenTelemetry(exchange);
+            return;
+        }
+        if ("POST".equalsIgnoreCase(method) && "/api/screen/warmup".equals(path)) {
+            handleScreenWarmup(exchange);
             return;
         }
 
@@ -328,6 +364,24 @@ public final class ScftBackendServer {
                 + "}";
         sendJson(exchange, 200, body);
     }
+
+    private void handleScreenWarmup(HttpExchange exchange) throws IOException {
+        if (GraphicsEnvironment.isHeadless()) {
+            sendJson(exchange, 503, "{\"ready\":false,\"error\":\"Screen capture is unavailable in headless mode\"}");
+            return;
+        }
+        Map<String, String> params = queryParams(exchange.getRequestURI());
+        int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
+        String displayId = params.getOrDefault("displayId", "");
+        try {
+            long startedAt = System.currentTimeMillis();
+            H264ScreenStreamer.warmUpCaptureEncoder(display, displayId);
+            sendJson(exchange, 200, "{\"ready\":true,\"durationMs\":" + (System.currentTimeMillis() - startedAt) + "}");
+        } catch (Exception error) {
+            sendJson(exchange, 503, "{\"ready\":false,\"error\":\"" + json(error.getMessage()) + "\"}");
+        }
+    }
+
     private void handleScreenFrame(HttpExchange exchange) throws IOException, AWTException {
         if (GraphicsEnvironment.isHeadless()) {
             sendJson(exchange, 503, "{\"error\":\"Screen capture is unavailable in headless mode\"}");
@@ -360,8 +414,11 @@ public final class ScftBackendServer {
         String displayId = params.getOrDefault("displayId", "");
         String aspect = params.getOrDefault("aspect", "16:9");
         String sessionId = params.getOrDefault("sessionId", "");
+        long generation = clampLong(params.get("generation"), 0L, Long.MAX_VALUE, 0L);
         ScreenSession currentSession = screenSession;
-        if (currentSession != null && !currentSession.sessionId.equals(sessionId)) {
+        if (currentSession == null || sessionId.isBlank() || generation <= 0L
+                || !currentSession.sessionId.equals(sessionId)
+                || currentSession.generation != generation) {
             sendJson(exchange, 409, "{\"error\":\"Screen session is stale\"}");
             return;
         }
@@ -384,10 +441,21 @@ public final class ScftBackendServer {
         H264ScreenStreamer previous = activeScreenStreamer;
         activeScreenStreamer = streamer;
         if (previous != null) previous.close();
-        if (currentSession != null) currentSession.state = "connecting";
+        if (currentSession != null) currentSession.markConnecting();
+        try {
+            streamer.prepare();
+        } catch (IOException | RuntimeException error) {
+            streamer.close();
+            if (activeScreenStreamer == streamer) activeScreenStreamer = null;
+            if (currentSession != null) currentSession.fail("STARTUP_TIMEOUT", "Không thể khởi động capture/encoder H264.");
+            sendJson(exchange, 503, "{\"error\":\"H264 capture/encoder unavailable\"}");
+            return;
+        }
         Headers headers = exchange.getResponseHeaders();
         headers.set("Content-Type", "h264".equals(format) ? "video/h264" : "video/mp2t");
         headers.set("Cache-Control", "no-store");
+        headers.set("X-SCFT-Capture-Setup-Ms", Long.toString(streamer.captureSetupMs()));
+        headers.set("X-SCFT-Encode-Setup-Ms", Long.toString(streamer.encodeSetupMs()));
         exchange.sendResponseHeaders(200, 0);
         try (OutputStream output = exchange.getResponseBody()) {
             streamer.stream(output);
@@ -400,22 +468,31 @@ public final class ScftBackendServer {
     private void handleScreenTelemetry(HttpExchange exchange) throws IOException {
         Map<String, String> params = queryParams(exchange.getRequestURI());
         String sessionId = params.getOrDefault("sessionId", "");
+        long generation = clampLong(params.get("generation"), 0L, Long.MAX_VALUE, 0L);
         int fps = clampInt(params.get("fps"), 0, 120, 0);
         int dropped = clampInt(params.get("dropped"), 0, Integer.MAX_VALUE, 0);
         int queue = clampInt(params.get("queue"), 0, Integer.MAX_VALUE, 0);
+        long bufferBytes = clampLong(params.get("bufferBytes"), 0L, 64L * 1024L * 1024L, 0L);
+        int decoderQueueDepth = clampInt(params.get("decoderQueueDepth"), 0, 128, 0);
+        long captureSetupMs = clampLong(params.get("captureSetupMs"), -1L, 60000L, -1L);
+        long encodeSetupMs = clampLong(params.get("encodeSetupMs"), -1L, 60000L, -1L);
+        long usbTransferMs = clampLong(params.get("usbTransferMs"), -1L, 60000L, -1L);
+        long decodeMs = clampLong(params.get("decodeMs"), -1L, 60000L, -1L);
+        long renderMs = clampLong(params.get("renderMs"), -1L, 60000L, -1L);
         long rtt = clampLong(params.get("rtt"), -1L, 60000L, -1L);
         String state = params.getOrDefault("state", "streaming");
+        String errorCode = params.getOrDefault("errorCode", "");
         ScreenSession current = screenSession;
-        if (current != null && current.sessionId.equals(sessionId)) {
-            current.updateTelemetry(state, fps, dropped, queue, rtt);
+        if (current != null && current.sessionId.equals(sessionId)
+                && generation > 0L && current.generation == generation) {
+            if ("error".equals(state)) {
+                current.fail(normalizeScreenErrorCode(errorCode), "Android báo lỗi luồng H264.");
+            } else {
+                current.updateTelemetry(state, fps, dropped, queue, rtt, bufferBytes, decoderQueueDepth, captureSetupMs, encodeSetupMs, usbTransferMs, decodeMs, renderMs);
+            }
         }
         String preset = params.getOrDefault("preset", "balanced");
         String recommendation = "keep";
-        if ("adaptive_2k".equals(preset)) {
-            if (fps > 0 && fps < 40 || dropped > 3) recommendation = "reconnect_30";
-            else if (fps > 0 && fps < 52 || dropped > 1) recommendation = "reconnect_45";
-            else if (fps >= 57 && dropped == 0) recommendation = "keep_60";
-        }
         sendJson(exchange, 200, "{\"action\":\"" + recommendation + "\"}");
     }
 
@@ -731,6 +808,19 @@ public final class ScftBackendServer {
         if ("adaptive_2k".equalsIgnoreCase(value) || "2k".equalsIgnoreCase(value)) return "adaptive_2k";
         return "balanced";
     }
+
+    private static String normalizeScreenErrorCode(String value) {
+        if ("PHONE_LOCKED".equals(value)
+                || "ADB_UNAUTHORIZED".equals(value)
+                || "USB_REVERSE_FAILED".equals(value)
+                || "VDD_NOT_READY".equals(value)
+                || "STARTUP_TIMEOUT".equals(value)
+                || "STREAM_STALLED".equals(value)
+                || "DECODER_ERROR".equals(value)) {
+            return value;
+        }
+        return "DECODER_ERROR";
+    }
     private static void validateContentLength(HttpExchange exchange) {
         String value = getHeader(exchange, "Content-Length");
         if (value == null || value.isBlank()) {
@@ -911,9 +1001,11 @@ public final class ScftBackendServer {
 
     private static final class ScreenSession {
         private final String sessionId;
+        private final long generation;
         private final int displayIndex;
         private final String displayId;
-        private final String presetId;
+        private final String requestedPreset;
+        private volatile String effectivePreset;
         private final String transport;
         private final int width;
         private final int height;
@@ -924,14 +1016,29 @@ public final class ScftBackendServer {
         private volatile int dropped;
         private volatile int queue;
         private volatile long rtt = -1L;
+        private volatile long bufferBytes;
+        private volatile int decoderQueueDepth;
+        private volatile long captureSetupMs = -1L;
+        private volatile long encodeSetupMs = -1L;
+        private volatile long usbTransferMs = -1L;
+        private volatile long decodeMs = -1L;
+        private volatile long renderMs = -1L;
         private volatile long firstFrameAt;
+        private volatile long createdAt = System.currentTimeMillis();
+        private volatile long updatedAt = createdAt;
+        private volatile int attempt = 1;
+        private volatile String errorCode = "";
+        private volatile String errorMessage = "";
 
-        private ScreenSession(String sessionId, int displayIndex, String displayId, String presetId,
+        private ScreenSession(String sessionId, long generation, int displayIndex, String displayId, String requestedPreset,
+                String effectivePreset,
                 String transport, int width, int height, int targetFps, String bitrate) {
             this.sessionId = sessionId;
+            this.generation = generation;
             this.displayIndex = displayIndex;
             this.displayId = displayId;
-            this.presetId = presetId;
+            this.requestedPreset = requestedPreset;
+            this.effectivePreset = effectivePreset;
             this.transport = transport;
             this.width = width;
             this.height = height;
@@ -939,24 +1046,71 @@ public final class ScftBackendServer {
             this.bitrate = bitrate;
         }
 
-        private void updateTelemetry(String nextState, int nextFps, int nextDropped, int nextQueue, long nextRtt) {
-            if (nextState != null && !nextState.isBlank()) state = nextState;
+        private void markConnecting() {
+            state = "connecting";
+            updatedAt = System.currentTimeMillis();
+        }
+
+        private void updateTelemetry(String nextState, int nextFps, int nextDropped, int nextQueue, long nextRtt,
+                long nextBufferBytes, int nextDecoderQueueDepth, long nextCaptureSetupMs, long nextEncodeSetupMs,
+                long nextUsbTransferMs, long nextDecodeMs, long nextRenderMs) {
+            if ("error".equals(state) || "stopped".equals(state)) return;
+            if (nextState != null && !nextState.isBlank()) {
+                if ("streaming".equals(nextState)) {
+                    if (firstFrameAt == 0L) firstFrameAt = System.currentTimeMillis();
+                    errorCode = "";
+                    errorMessage = "";
+                }
+                state = nextState;
+            }
             fps = nextFps;
             dropped = nextDropped;
             queue = nextQueue;
             rtt = nextRtt;
-            if ("streaming".equals(state) && firstFrameAt == 0L) firstFrameAt = System.currentTimeMillis();
+            bufferBytes = nextBufferBytes;
+            decoderQueueDepth = nextDecoderQueueDepth;
+            if (nextCaptureSetupMs >= 0L) captureSetupMs = nextCaptureSetupMs;
+            if (nextEncodeSetupMs >= 0L) encodeSetupMs = nextEncodeSetupMs;
+            if (nextUsbTransferMs >= 0L) usbTransferMs = nextUsbTransferMs;
+            if (nextDecodeMs >= 0L) decodeMs = nextDecodeMs;
+            if (nextRenderMs >= 0L) renderMs = nextRenderMs;
+            updatedAt = System.currentTimeMillis();
+        }
+
+        private void fail(String code, String message) {
+            // A late Android telemetry packet must not replace the authoritative
+            // startup/transport error already recorded by the backend.
+            if ("error".equals(state) || "stopped".equals(state)) return;
+            state = "error";
+            errorCode = normalizeScreenErrorCode(code);
+            errorMessage = message == null ? "Không thể duy trì phiên màn hình." : message;
+            updatedAt = System.currentTimeMillis();
+        }
+
+        private void recover(String code, String message) {
+            state = "recovering";
+            errorCode = normalizeScreenErrorCode(code);
+            errorMessage = message == null ? "Đang thử khôi phục phiên màn hình." : message;
+            updatedAt = System.currentTimeMillis();
         }
 
         private String toJson() {
             return "{"
                     + "\"sessionId\":\"" + json(sessionId) + "\","
+                    + "\"generation\":" + generation + ","
                     + "\"state\":\"" + json(state) + "\","
+                    + "\"requestedPreset\":\"" + json(requestedPreset) + "\","
+                    + "\"effectivePreset\":\"" + json(effectivePreset) + "\","
+                    + "\"attempt\":" + attempt + ","
+                    + "\"errorCode\":\"" + json(errorCode) + "\","
+                    + "\"errorMessage\":\"" + json(errorMessage) + "\","
+                    + "\"createdAt\":" + createdAt + ","
+                    + "\"updatedAt\":" + updatedAt + ","
                     + "\"transport\":\"" + json(transport) + "\","
                     + "\"config\":{"
                     + "\"displayIndex\":" + displayIndex + ","
                     + "\"displayId\":\"" + json(displayId) + "\","
-                    + "\"presetId\":\"" + json(presetId) + "\","
+                    + "\"presetId\":\"" + json(effectivePreset) + "\","
                     + "\"width\":" + width + ","
                     + "\"height\":" + height + ","
                     + "\"targetFps\":" + targetFps + ","
@@ -964,9 +1118,18 @@ public final class ScftBackendServer {
                     + "\"metrics\":{"
                     + "\"fps\":" + fps + ","
                     + "\"dropped\":" + dropped + ","
+                    + "\"droppedFrames\":" + dropped + ","
                     + "\"queue\":" + queue + ","
                     + "\"rtt\":" + rtt + ","
-                    + "\"firstFrameAt\":" + firstFrameAt
+                    + "\"rttMs\":" + rtt + ","
+                    + "\"firstFrameAt\":" + firstFrameAt + ","
+                    + "\"bufferBytes\":" + bufferBytes + ","
+                    + "\"decoderQueueDepth\":" + decoderQueueDepth + ","
+                    + "\"captureSetupMs\":" + captureSetupMs + ","
+                    + "\"encodeSetupMs\":" + encodeSetupMs + ","
+                    + "\"usbTransferMs\":" + usbTransferMs + ","
+                    + "\"decodeMs\":" + decodeMs + ","
+                    + "\"renderMs\":" + renderMs
                     + "}"
                     + "}";
         }

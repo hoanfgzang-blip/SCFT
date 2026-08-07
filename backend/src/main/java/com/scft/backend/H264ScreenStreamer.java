@@ -29,6 +29,50 @@ final class H264ScreenStreamer implements AutoCloseable {
     private final int targetHeight;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile Process process;
+    private volatile long captureSetupMs = -1L;
+    private volatile long encodeSetupMs = -1L;
+
+    static void warmUpEncoder() {
+        resolveH264Encoder();
+    }
+
+    static void warmUpCaptureEncoder(int display, String displayId) throws IOException {
+        Rectangle bounds = screenBounds(display, displayId);
+        String encoder = resolveH264Encoder();
+        String executable = resolveFfmpegExecutable();
+        List<String> command = new ArrayList<>(List.of(
+                executable, "-hide_banner", "-loglevel", "error",
+                "-f", "gdigrab", "-draw_mouse", "0", "-framerate", "1",
+                "-offset_x", Integer.toString(bounds.x), "-offset_y", Integer.toString(bounds.y),
+                "-video_size", bounds.width + "x" + bounds.height, "-i", "desktop",
+                "-an", "-c:v", encoder
+        ));
+        if ("h264_nvenc".equalsIgnoreCase(encoder)) {
+            command.addAll(List.of("-preset", "p1", "-tune", "ull", "-rc-lookahead", "0", "-delay", "0", "-zerolatency", "1", "-bf", "0", "-b:v", "1M"));
+        } else if ("h264_mf".equalsIgnoreCase(encoder)) {
+            command.addAll(List.of("-rate_control", "ld_vbr", "-scenario", "display_remoting", "-b:v", "1M"));
+        } else {
+            command.addAll(List.of("-preset", "ultrafast", "-tune", "zerolatency", "-bf", "0", "-b:v", "1M"));
+        }
+        command.addAll(List.of("-frames:v", "1", "-f", "null", "-"));
+        ProcessBuilder builder = new ProcessBuilder(command)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        Process probe = builder.start();
+        try {
+            if (!probe.waitFor(5, TimeUnit.SECONDS)) {
+                probe.destroyForcibly();
+                throw new IOException("Capture/encoder warm-up timed out");
+            }
+            if (probe.exitValue() != 0) {
+                throw new IOException("Capture/encoder warm-up failed with exit code " + probe.exitValue());
+            }
+        } catch (InterruptedException error) {
+            probe.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new IOException("Capture/encoder warm-up interrupted", error);
+        }
+    }
 
     H264ScreenStreamer(int display, String displayId, int fps, String format, String bitrate, int targetWidth, int targetHeight) {
         this.display = display;
@@ -46,14 +90,31 @@ final class H264ScreenStreamer implements AutoCloseable {
             return;
         }
 
-        process = startDesktopEncoder();
+        prepare();
         try (InputStream encoded = process.getInputStream()) {
             encoded.transferTo(response);
         }
     }
 
-    private Process startDesktopEncoder() throws IOException {
+    void prepare() throws IOException {
+        if (process != null) return;
+        long captureStartedAt = System.nanoTime();
         Rectangle bounds = screenBounds(display, displayId);
+        captureSetupMs = (System.nanoTime() - captureStartedAt) / 1_000_000L;
+        long encodeStartedAt = System.nanoTime();
+        process = startDesktopEncoder(bounds);
+        encodeSetupMs = (System.nanoTime() - encodeStartedAt) / 1_000_000L;
+    }
+
+    long captureSetupMs() {
+        return captureSetupMs;
+    }
+
+    long encodeSetupMs() {
+        return encodeSetupMs;
+    }
+
+    private Process startDesktopEncoder(Rectangle bounds) throws IOException {
         List<String> command = encoderBase();
         command.addAll(List.of("-fflags", "nobuffer", "-f", "gdigrab", "-draw_mouse", "1", "-framerate", Integer.toString(fps), "-offset_x", Integer.toString(bounds.x), "-offset_y", Integer.toString(bounds.y), "-video_size", bounds.width + "x" + bounds.height, "-i", "desktop"));
         appendEncoderOutput(command);
@@ -111,8 +172,18 @@ final class H264ScreenStreamer implements AutoCloseable {
     private void appendEncoderOutput(List<String> command) {
         String encoder = resolveH264Encoder();
         List<String> filters = new ArrayList<>();
-        if (targetWidth > 0 && targetHeight > 0) {
-            filters.add("scale=" + targetWidth + ":" + targetHeight + ":flags=fast_bilinear");
+        // The 16:10 2K profile already matches the virtual display size on the
+        // supported VDD path. Avoid an unnecessary CPU scale in that case.
+        if (targetWidth > 0 && targetHeight > 0
+                && !(targetWidth == 2048 && targetHeight == 1280)) {
+            if ("h264_nvenc".equalsIgnoreCase(encoder)) {
+                // Keep resize on the GPU. gdigrab/raw-frame input is uploaded
+                // once, then scale_cuda feeds NVENC without a CPU round-trip.
+                filters.add("hwupload_cuda");
+                filters.add("scale_cuda=" + targetWidth + ":" + targetHeight);
+            } else {
+                filters.add("scale=" + targetWidth + ":" + targetHeight + ":flags=fast_bilinear");
+            }
         }
         if ("h264_mf".equalsIgnoreCase(encoder)) {
             filters.add("format=nv12");
@@ -154,7 +225,7 @@ final class H264ScreenStreamer implements AutoCloseable {
                 boolean completed = probe.waitFor(2, TimeUnit.SECONDS);
                 String listing = new String(output, java.nio.charset.StandardCharsets.UTF_8);
                 if (completed && probe.exitValue() == 0) {
-                    for (String candidate : List.of("h264_mf", "h264_qsv", "h264_nvenc", "libx264")) {
+                    for (String candidate : List.of("h264_nvenc", "h264_mf", "h264_qsv", "libx264")) {
                         if (listing.contains(" " + candidate) || listing.contains("\\t" + candidate)) {
                             detectedEncoder = candidate;
                             return candidate;

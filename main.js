@@ -15,6 +15,11 @@ let backendProcess = null;
 let runtimePaths = null;
 let popoutWindow = null;
 let virtualDisplayProcess = null;
+let pcScreenOperation = null;
+let pcScreenActive = null;
+let pcScreenMonitorTimer = null;
+let pcScreenMonitorBusy = false;
+let pcScreenRecoveryPromise = null;
 const VDD_WINGET_ID = 'VirtualDrivers.Virtual-Display-Driver';
 const VDD_VERSION = '25.7.23';
 const VDD_RELEASE_URL = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases';
@@ -224,14 +229,14 @@ async function ensureVirtualDisplay() {
         const error = new Error(controlOpened
             ? 'VDD Control đã mở nhưng Windows chưa nhận màn hình ảo. Hãy bấm Install/Enable trong VDD Control rồi thử lại.'
             : 'Virtual Display Driver đã cài nhưng chưa tìm thấy VDD Control. Hãy mở VDD Control từ gói driver rồi bấm Install/Enable.');
-        error.code = 'VDD_DISPLAY_NOT_READY';
+        error.code = 'VDD_NOT_READY';
         throw error;
     }
 
     status = await getVddDeviceStatus();
     if (!status.installed || status.startedCount < 1) {
         const error = new Error('Virtual Display Driver đã cài nhưng Windows chưa khởi động màn hình ảo. Hãy bật Install/Enable trong VDD Control rồi thử lại.');
-        error.code = 'VDD_DISPLAY_NOT_READY';
+        error.code = 'VDD_NOT_READY';
         throw error;
     }
 
@@ -500,6 +505,329 @@ function startUsbTunnel() {
     });
 }
 
+function runAdbPromise(args) {
+    const candidates = getAdbCandidates();
+    return new Promise((resolve, reject) => {
+        const tryCandidate = index => {
+            if (index >= candidates.length) {
+                const error = new Error('Không tìm thấy ADB.');
+                error.code = 'ADB_NOT_FOUND';
+                reject(error);
+                return;
+            }
+            execFile(candidates[index], args, { windowsHide: true }, (error, stdout, stderr) => {
+                if (error && error.code === 'ENOENT') {
+                    tryCandidate(index + 1);
+                    return;
+                }
+                if (error) {
+                    const failure = new Error((stderr || stdout || error.message || '').trim());
+                    failure.code = error.code || 'ADB_COMMAND_FAILED';
+                    reject(failure);
+                    return;
+                }
+                resolve({ stdout: (stdout || '').trim(), command: candidates[index] });
+            });
+        };
+        tryCandidate(0);
+    });
+}
+
+function emitPcScreenProgress(event, step, message, extra = {}) {
+    event.sender.send('scft-pc-screen-progress', { step, message, ...extra });
+}
+
+async function getAuthorizedAdbDevice() {
+    const result = await runAdbPromise(['devices']);
+    const lines = result.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const unauthorized = lines.some(line => /\tunauthorized$/.test(line) || /\sunauthorized$/.test(line));
+    const deviceLine = lines.find(line => /\tdevice$/.test(line) || /\sdevice$/.test(line));
+    if (!deviceLine) {
+        const error = new Error(unauthorized
+            ? 'Điện thoại chưa được cấp quyền ADB. Hãy mở khóa và chấp nhận thông báo gỡ lỗi USB.'
+            : 'Chưa có điện thoại ADB được cấp quyền. Hãy kết nối điện thoại bằng cáp USB.');
+        error.code = unauthorized ? 'ADB_UNAUTHORIZED' : 'ADB_DEVICE_NOT_FOUND';
+        throw error;
+    }
+    return deviceLine.split(/\s+/)[0];
+}
+
+async function isAndroidLocked(serial) {
+    const [windowState, activityState, powerState] = await Promise.all([
+        runAdbPromise(['-s', serial, 'shell', 'dumpsys', 'window', 'windows']),
+        runAdbPromise(['-s', serial, 'shell', 'dumpsys', 'activity', 'activities']),
+        runAdbPromise(['-s', serial, 'shell', 'dumpsys', 'power'])
+    ]);
+    const state = `${windowState.stdout}\n${activityState.stdout}\n${powerState.stdout}`;
+    return /mKeyguardShowing(?:=|\s+)(true)|isKeyguardShowing(?:=|\s+)(true)|isStatusBarKeyguard(?:=|\s+)(true)|mDreamingLockscreen(?:=|\s+)(true)|KeyguardShowing=true|mWakefulness=(?:Asleep|Dozing)/i.test(state);
+}
+
+async function backendJson(url, options = {}) {
+    const response = await fetch(url, options);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const error = new Error(body.error || `HTTP ${response.status}`);
+        error.code = body.errorCode || `HTTP_${response.status}`;
+        throw error;
+    }
+    return body;
+}
+
+async function deleteBackendSession(sessionId) {
+    const suffix = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+    await fetch(`http://127.0.0.1:7878/api/screen/session${suffix}`, { method: 'DELETE' }).catch(() => {});
+}
+
+async function failBackendPcScreenSession(sessionId, generation, code) {
+    if (!sessionId || !generation) return;
+    const query = new URLSearchParams({
+        sessionId,
+        generation: String(generation),
+        state: 'error',
+        errorCode: code || 'STREAM_STALLED'
+    });
+    await fetch(`http://127.0.0.1:7878/api/screen/telemetry?${query}`, { method: 'POST' }).catch(() => {});
+}
+
+async function waitForPcScreenStreaming(event, sessionId, timeoutMs, operation = null) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (operation?.cancelled) {
+            const cancelled = new Error('PC Screen operation was cancelled.');
+            cancelled.code = 'PC_SCREEN_STOPPED';
+            throw cancelled;
+        }
+        const session = await backendJson('http://127.0.0.1:7878/api/screen/session');
+        if (!session || session.sessionId !== sessionId) return { session: null, ok: false };
+        if (session.state === 'streaming') return { session, ok: true };
+        if (session.state === 'error' || session.state === 'stopped') return { session, ok: false };
+        await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    return { session: await backendJson('http://127.0.0.1:7878/api/screen/session').catch(() => null), ok: false };
+}
+
+function stopPcScreenMonitor() {
+    if (pcScreenMonitorTimer) clearInterval(pcScreenMonitorTimer);
+    pcScreenMonitorTimer = null;
+    pcScreenMonitorBusy = false;
+    if (pcScreenActive) pcScreenActive.cancelled = true;
+    pcScreenActive = null;
+}
+
+async function recoverPcScreenSession(event, active) {
+    emitPcScreenProgress(event, 'recovering', 'Luồng H264 bị gián đoạn, đang thử kết nối lại...');
+    const presets = [active.presetId, active.presetId];
+    if (active.presetId !== 'zero_latency') presets.push('zero_latency');
+    let failedSessionId = active.sessionId;
+    for (let index = 0; index < presets.length; index++) {
+        if (pcScreenActive !== active || active.cancelled) {
+            const cancelled = new Error('PC Screen recovery was cancelled.');
+            cancelled.code = 'PC_SCREEN_STOPPED';
+            throw cancelled;
+        }
+        const presetId = presets[index];
+        await runAdbPromise(['-s', active.serial, 'shell', 'am', 'force-stop', 'com.example.myapplication']).catch(() => {});
+        await deleteBackendSession(failedSessionId);
+        failedSessionId = '';
+        try {
+            const result = await launchPcScreenAttempt(event, active.serial, active.config, presetId, index + 1, active);
+            if (pcScreenActive !== active || active.cancelled) {
+                await deleteBackendSession(result.sessionId || '');
+                const cancelled = new Error('PC Screen recovery was cancelled.');
+                cancelled.code = 'PC_SCREEN_STOPPED';
+                throw cancelled;
+            }
+            if (result.ok) {
+                active.sessionId = result.sessionId;
+                active.presetId = presetId;
+                emitPcScreenProgress(event, 'streaming', 'Đã khôi phục kết nối H264.', { effectivePreset: presetId, sessionId: result.sessionId });
+                return result.session;
+            }
+            failedSessionId = result.sessionId || '';
+        } catch (error) {
+            failedSessionId = error.sessionId || '';
+        }
+    }
+    const failedSession = await backendJson('http://127.0.0.1:7878/api/screen/session').catch(() => null);
+    if (failedSession?.sessionId === failedSessionId) {
+        await failBackendPcScreenSession(failedSession.sessionId, failedSession.generation, 'STREAM_STALLED');
+    }
+    const error = new Error('Không thể khôi phục luồng H264. Hãy bấm Thử lại.');
+    error.code = 'STREAM_STALLED';
+    throw error;
+}
+
+function startPcScreenMonitor(event, serial, config, presetId, sessionId) {
+    stopPcScreenMonitor();
+    pcScreenActive = { serial, config: { ...config }, presetId, sessionId, cancelled: false };
+    pcScreenMonitorTimer = setInterval(async () => {
+        const active = pcScreenActive;
+        if (!active || pcScreenRecoveryPromise || pcScreenMonitorBusy) return;
+        pcScreenMonitorBusy = true;
+        try {
+            const session = await backendJson('http://127.0.0.1:7878/api/screen/session');
+            if (!session || session.sessionId !== active.sessionId) return;
+            if (session.state !== 'recovering' && session.state !== 'error') return;
+            pcScreenRecoveryPromise = recoverPcScreenSession(event, active)
+                .catch(error => {
+                    stopPcScreenMonitor();
+                    if (error.code !== 'PC_SCREEN_STOPPED') {
+                        emitPcScreenProgress(event, 'error', error.message || 'Không thể khôi phục luồng H264.', { code: error.code || 'STREAM_STALLED' });
+                    }
+                })
+                .finally(() => {
+                    pcScreenRecoveryPromise = null;
+                });
+        } catch (_) {
+            // The next monitor tick retries after a transient backend failure.
+        } finally {
+            pcScreenMonitorBusy = false;
+        }
+    }, 1000);
+}
+
+async function launchPcScreenAttempt(event, serial, config, presetId, attempt, operation = null) {
+    emitPcScreenProgress(event, 'session', `Đang tạo phiên H264 (${presetId}, lần thử ${attempt})...`, { presetId, attempt });
+    const query = new URLSearchParams({
+        display: String(config.displayIndex),
+        displayId: config.displayId || '',
+        preset: presetId,
+        requestedPreset: config.presetId || presetId,
+        transport: 'usb',
+        attempt: String(attempt)
+    });
+    let session = null;
+    try {
+        session = await backendJson(`http://127.0.0.1:7878/api/screen/session?${query}`, { method: 'POST' });
+        const args = [
+            '-s', serial, 'shell', 'am', 'start', '-S', '-n', 'com.example.myapplication/.MainActivity',
+            '--es', 'scft_screen', 'pc',
+            '--ei', 'scft_display', String(config.displayIndex),
+            '--es', 'scft_display_id', config.displayId || '',
+            '--es', 'scft_preset', presetId,
+            '--es', 'scft_session_id', session.sessionId,
+            '--el', 'scft_generation', String(session.generation || 0),
+            '--ei', 'scft_attempt', String(attempt),
+            '--ez', 'scft_autostart', 'true',
+            '--es', 'scft_base_url', 'http://127.0.0.1:7878'
+        ];
+        emitPcScreenProgress(event, 'launch', 'Đang khởi chạy viewer trên điện thoại...', { presetId, attempt, sessionId: session.sessionId });
+        await runAdbPromise(args);
+        emitPcScreenProgress(event, 'connecting', 'Đang chờ frame H264 đầu tiên...', { presetId, attempt, sessionId: session.sessionId });
+        const result = await waitForPcScreenStreaming(event, session.sessionId, 12000, operation);
+        return { ...result, sessionId: session.sessionId };
+    } catch (error) {
+        if (session?.sessionId) error.sessionId = session.sessionId;
+        throw error;
+    }
+}
+
+function assertPcScreenOperation(operation) {
+    if (!operation?.cancelled) return;
+    const cancelled = new Error('PC Screen operation was cancelled.');
+    cancelled.code = 'PC_SCREEN_STOPPED';
+    throw cancelled;
+}
+
+async function applyPcScreen(event, config) {
+    if (pcScreenOperation || pcScreenRecoveryPromise) {
+        const error = new Error('PC Screen đang có một thao tác khác.');
+        error.code = 'PC_SCREEN_BUSY';
+        throw error;
+    }
+    const operation = { cancelled: false, serial: null };
+    pcScreenOperation = operation;
+    let activeSessionId = '';
+    let serial = null;
+    try {
+        emitPcScreenProgress(event, 'driver', 'Đang kiểm tra màn hình ảo...');
+        await ensureVirtualDisplay();
+        assertPcScreenOperation(operation);
+        emitPcScreenProgress(event, 'adb', 'Đang kiểm tra điện thoại USB/ADB...');
+        serial = await getAuthorizedAdbDevice();
+        operation.serial = serial;
+        assertPcScreenOperation(operation);
+        if (await isAndroidLocked(serial)) {
+            const error = new Error('Điện thoại đang khóa. Hãy tự mở khóa điện thoại rồi bấm Thử lại.');
+            error.code = 'PHONE_LOCKED';
+            throw error;
+        }
+        assertPcScreenOperation(operation);
+        emitPcScreenProgress(event, 'usb', 'Đang thiết lập kết nối USB...');
+        try {
+            await runAdbPromise(['-s', serial, 'reverse', 'tcp:7878', 'tcp:7878']);
+        } catch (error) {
+            error.code = 'USB_REVERSE_FAILED';
+            error.message = 'Không thể thiết lập ADB reverse qua USB. Hãy kiểm tra cáp USB rồi bấm Thử lại.';
+            throw error;
+        }
+        assertPcScreenOperation(operation);
+        stopPcScreenMonitor();
+        await runAdbPromise(['-s', serial, 'shell', 'am', 'force-stop', 'com.example.myapplication']).catch(() => {});
+        await deleteBackendSession('');
+        assertPcScreenOperation(operation);
+
+        const requestedPreset = config.presetId || 'balanced';
+        const presets = [requestedPreset, requestedPreset];
+        if (requestedPreset !== 'zero_latency') presets.push('zero_latency');
+        let previousPreset = '';
+        for (let index = 0; index < presets.length; index++) {
+            assertPcScreenOperation(operation);
+            const presetId = presets[index];
+            if (presetId !== previousPreset && previousPreset) {
+                emitPcScreenProgress(event, 'fallback', 'Preset hiện tại không ổn định, chuyển sang Không độ trễ...', { presetId });
+            }
+            previousPreset = presetId;
+            await runAdbPromise(['-s', serial, 'shell', 'am', 'force-stop', 'com.example.myapplication']).catch(() => {});
+            assertPcScreenOperation(operation);
+            let result;
+            try {
+                result = await launchPcScreenAttempt(event, serial, config, presetId, index + 1, operation);
+            } catch (error) {
+                activeSessionId = error.sessionId || '';
+                if (index < presets.length - 1) {
+                    await deleteBackendSession(activeSessionId);
+                    activeSessionId = '';
+                    continue;
+                }
+                throw error;
+            }
+            activeSessionId = result.sessionId || '';
+            if (result.ok) {
+                emitPcScreenProgress(event, 'streaming', 'Điện thoại đang nhận màn hình PC.', { presetId, effectivePreset: presetId, sessionId: activeSessionId });
+                startPcScreenMonitor(event, serial, config, presetId, activeSessionId);
+                return { ...result.session, requestedPreset, effectivePreset: presetId };
+            }
+            if (index < presets.length - 1) {
+                await deleteBackendSession(activeSessionId);
+                activeSessionId = '';
+            }
+        }
+        const error = new Error('Không thể nhận frame H264. Hãy kiểm tra điện thoại, cáp USB rồi bấm Thử lại.');
+        error.code = 'STARTUP_TIMEOUT';
+        throw error;
+    } catch (error) {
+        await runAdbPromise(['-s', serial, 'shell', 'am', 'force-stop', 'com.example.myapplication']).catch(() => {});
+        throw error;
+    } finally {
+        pcScreenOperation = null;
+    }
+}
+
+async function stopPcScreen(event) {
+    emitPcScreenProgress(event, 'stopping', 'Đang dừng truyền hình...');
+    const operation = pcScreenOperation;
+    if (operation) operation.cancelled = true;
+    const recovery = pcScreenRecoveryPromise;
+    stopPcScreenMonitor();
+    const serial = operation?.serial || await getAuthorizedAdbDevice().catch(() => null);
+    if (serial) await runAdbPromise(['-s', serial, 'shell', 'am', 'force-stop', 'com.example.myapplication']).catch(() => {});
+    await deleteBackendSession('');
+    if (recovery) await recovery.catch(() => {});
+    emitPcScreenProgress(event, 'stopped', 'Đã dừng truyền hình. Màn hình ảo vẫn được giữ lại.');
+    return { stopped: true, driverKept: true };
+}
+
 function createWindow() {
     const win = new BrowserWindow({
         width: 1100,
@@ -553,6 +881,8 @@ app.whenReady().then(() => {
 
     ipcMain.handle('scft-virtual-display-start', async () => startVirtualDisplay());
     ipcMain.handle('scft-virtual-display-stop', async () => stopVirtualDisplay());
+    ipcMain.handle('scft-pc-screen-apply', async (event, config) => applyPcScreen(event, config || {}));
+    ipcMain.handle('scft-pc-screen-stop', async event => stopPcScreen(event));
     ipcMain.handle('scft-virtual-display-open-installer', async () => {
         if (launchVddControl()) return { opened: true, local: true };
         await shell.openExternal(VDD_RELEASE_URL);
