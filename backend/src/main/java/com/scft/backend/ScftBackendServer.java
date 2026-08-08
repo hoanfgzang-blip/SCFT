@@ -30,6 +30,7 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -55,6 +56,7 @@ public final class ScftBackendServer {
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final long MAX_UPLOAD_BYTES = 2L * 1024L * 1024L * 1024L;
     private static final long SCREEN_FRAME_INTERVAL_MS = 33L;
+    private static final long ANDROID_STATUS_TIMEOUT_MS = 10_000L;
     private static final Path VIRTUAL_DISPLAY_FRAME_PATH = Path.of(System.getenv().getOrDefault("ProgramData", "C:\\ProgramData"), "SCFT", "virtual-display-frame.bmp");
     private static final Map<Integer, Robot> SCREEN_ROBOTS = new HashMap<>();
 
@@ -62,7 +64,14 @@ public final class ScftBackendServer {
     private final Path uploadDir;
     private final Path metadataDir;
     private final String deviceId;
-    private final String deviceName;
+    private volatile String deviceName;
+    private final Path deviceNameFile;
+    private final Path androidConnectionFile;
+    private volatile boolean androidConnected;
+    private volatile String androidDeviceId = "";
+    private volatile String androidDeviceName = "";
+    private volatile long androidConnectedAtMs;
+    private volatile long androidLastSeenMs;
     private final Map<String, ScreenFrame> screenFrames = new ConcurrentHashMap<>();
     private final ExecutorService screenCaptureExecutor = Executors.newSingleThreadExecutor();
     private final AtomicLong screenGeneration = new AtomicLong();
@@ -80,7 +89,10 @@ public final class ScftBackendServer {
         .toAbsolutePath()
         .normalize();
         this.deviceId = getOrCreateDeviceId(storageRoot);
-        this.deviceName = System.getProperty("user.name", "SCFT Desktop");
+        this.deviceNameFile = storageRoot.resolve("device-name.txt");
+        this.deviceName = loadDeviceName(this.deviceNameFile);
+        this.androidConnectionFile = storageRoot.resolve("android-connection.properties");
+        loadAndroidConnectionState(this.androidConnectionFile);
         Files.createDirectories(uploadDir);
         Files.createDirectories(metadataDir);
         H264ScreenStreamer.warmUpEncoder();
@@ -106,6 +118,8 @@ public final class ScftBackendServer {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/health", withCors(this::handleHealth));
         server.createContext("/api/device", withCors(this::handleDevice));
+        server.createContext("/api/device/name", withCors(this::handleDeviceName));
+        server.createContext("/api/android/status", withCors(this::handleAndroidStatus));
         server.createContext("/api/files", withCors(this::handleFiles));
         server.createContext("/api/screen", withCors(this::handleScreen));
         server.setExecutor(Executors.newFixedThreadPool(8));
@@ -121,7 +135,7 @@ public final class ScftBackendServer {
         return exchange -> {
             Headers headers = exchange.getResponseHeaders();
             headers.set("Access-Control-Allow-Origin", "*");
-            headers.set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+            headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
             headers.set("Access-Control-Allow-Headers", "Content-Type,X-Device-Id,X-Original-Filename");
 
             if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
@@ -163,6 +177,104 @@ public final class ScftBackendServer {
                 + "\"port\":" + port
                 + "}";
         sendJson(exchange, 200, body);
+    }
+
+    private synchronized void handleAndroidStatus(HttpExchange exchange) throws IOException {
+        String method = exchange.getRequestMethod();
+        if ("GET".equalsIgnoreCase(method)) {
+            boolean active = androidConnected
+                    && androidLastSeenMs > 0
+                    && System.currentTimeMillis() - androidLastSeenMs <= ANDROID_STATUS_TIMEOUT_MS;
+            sendJson(exchange, 200, androidStatusJson(active));
+            return;
+        }
+
+        if (!"POST".equalsIgnoreCase(method)) {
+            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+            return;
+        }
+
+        Map<String, String> params = queryParams(exchange.getRequestURI());
+        boolean connected = Boolean.parseBoolean(params.getOrDefault("connected", "false"));
+        long now = System.currentTimeMillis();
+
+        if (connected) {
+            String nextDeviceId = params.getOrDefault("deviceId", "").trim();
+            if (nextDeviceId.isBlank()) {
+                throw new IllegalArgumentException("Missing Android device id");
+            }
+
+            boolean newConnection = !androidConnected || !nextDeviceId.equals(androidDeviceId);
+            androidConnected = true;
+            androidDeviceId = nextDeviceId;
+            androidDeviceName = params.getOrDefault("deviceName", "Android").trim();
+            androidLastSeenMs = now;
+
+            if (newConnection) {
+                androidConnectedAtMs = parseEpochMillis(params.get("connectedAtMs"), now);
+            }
+        } else {
+            androidConnected = false;
+            androidLastSeenMs = now;
+        }
+
+        saveAndroidConnectionState();
+        sendJson(exchange, 200, androidStatusJson(androidConnected));
+    }
+
+    private String androidStatusJson(boolean active) {
+        String connectedAt = active && androidConnectedAtMs > 0
+                ? "\"" + json(Instant.ofEpochMilli(androidConnectedAtMs).toString()) + "\""
+                : "null";
+        return "{"
+                + "\"connected\":" + active + ","
+                + "\"deviceId\":\"" + json(active ? androidDeviceId : "") + "\","
+                + "\"deviceName\":\"" + json(active ? androidDeviceName : "") + "\","
+                + "\"connectedAt\":" + connectedAt + ","
+                + "\"lastSeen\":" + (androidLastSeenMs > 0 ? androidLastSeenMs : "null") + ","
+                + "\"transport\":\"USB\""
+                + "}";
+    }
+
+    private static long parseEpochMillis(String value, long fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private void loadAndroidConnectionState(Path file) throws IOException {
+        if (!Files.exists(file)) {
+            return;
+        }
+        Properties properties = new Properties();
+        try (InputStream input = Files.newInputStream(file)) {
+            properties.load(input);
+        }
+        androidConnected = Boolean.parseBoolean(properties.getProperty("connected", "false"));
+        androidDeviceId = properties.getProperty("deviceId", "");
+        androidDeviceName = properties.getProperty("deviceName", "");
+        androidConnectedAtMs = parseEpochMillis(properties.getProperty("connectedAtMs"), 0L);
+        androidLastSeenMs = parseEpochMillis(properties.getProperty("lastSeenMs"), 0L);
+        if (System.currentTimeMillis() - androidLastSeenMs > ANDROID_STATUS_TIMEOUT_MS) {
+            androidConnected = false;
+        }
+    }
+
+    private void saveAndroidConnectionState() throws IOException {
+        Properties properties = new Properties();
+        properties.setProperty("connected", Boolean.toString(androidConnected));
+        properties.setProperty("deviceId", androidDeviceId);
+        properties.setProperty("deviceName", androidDeviceName);
+        properties.setProperty("connectedAtMs", Long.toString(androidConnectedAtMs));
+        properties.setProperty("lastSeenMs", Long.toString(androidLastSeenMs));
+        try (OutputStream output = Files.newOutputStream(androidConnectionFile)) {
+            properties.store(output, "SCFT Android connection state");
+        }
     }
 
     private void handleScreenSessionStart(HttpExchange exchange) throws IOException {
@@ -227,6 +339,30 @@ public final class ScftBackendServer {
             activeScreenStreamer = null;
             if (previous != null) previous.close();
         }
+    }
+
+    private void handleDeviceName(HttpExchange exchange) throws IOException {
+    if (!requireMethod(exchange, "PUT")) {
+        return;
+    }
+
+    String name = queryParams(exchange.getRequestURI()).get("name");
+
+    if (name == null || name.isBlank()) {
+        throw new IllegalArgumentException("Tên thiết bị không được để trống");
+    }
+
+    name = name.trim();
+
+    if (name.length() > 80) {
+        throw new IllegalArgumentException("Tên thiết bị quá dài");
+    }
+
+    Files.writeString(deviceNameFile, name, StandardCharsets.UTF_8);
+    deviceName = name;
+
+    sendJson(exchange, 200,
+            "{\"saved\":true,\"name\":\"" + json(deviceName) + "\"}");
     }
 
     private void handleFiles(HttpExchange exchange) throws IOException {
@@ -931,6 +1067,21 @@ public final class ScftBackendServer {
         String id = UUID.randomUUID().toString();
         Files.writeString(deviceFile, id, StandardCharsets.UTF_8);
         return id;
+    }
+
+    private static String loadDeviceName(Path deviceNameFile) throws IOException {
+    if (Files.exists(deviceNameFile)) {
+        String savedName = Files.readString(
+                deviceNameFile,
+                StandardCharsets.UTF_8
+        ).trim();
+
+        if (!savedName.isBlank()) {
+            return savedName;
+        }
+    }
+
+    return "SCFT Desktop";
     }
 
     private static String findLocalIp() {
