@@ -43,6 +43,27 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
             nameInput.setAttribute('disabled', 'true');
             localSaver('SCFT_DeviceName', nameInput.value);
+
+            fetch(
+                `http://127.0.0.1:7878/api/device/name?name=${encodeURIComponent(nameInput.value)}`,
+                {
+                    method: 'PUT'
+                }
+            )
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Không thể lưu tên thiết bị vào Backend');
+                    }
+
+                    return response.json();
+                })
+                .then(() => {
+                    console.log('Đã lưu tên thiết bị vào Backend');
+                })
+                .catch(error => {
+                    console.error('Lỗi lưu tên thiết bị:', error);
+                });
+
             editBtn.innerHTML = `<svg width="20px" height="20px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15.4998 5.49994L18.3282 8.32837M3 20.9997L3.04745 20.6675C3.21536 19.4922 3.29932 18.9045 3.49029 18.3558C3.65975 17.8689 3.89124 17.4059 4.17906 16.9783C4.50341 16.4963 4.92319 16.0765 5.76274 15.237L17.4107 3.58896C18.1918 2.80791 19.4581 2.80791 20.2392 3.58896C21.0202 4.37001 21.0202 5.63634 20.2392 6.41739L8.37744 18.2791C7.61579 19.0408 7.23497 19.4216 6.8012 19.7244C6.41618 19.9932 6.00093 20.2159 5.56398 20.3879C5.07171 20.5817 4.54375 20.6882 3.48793 20.9012L3 20.9997Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
         }
     });
@@ -107,7 +128,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (savedOutput) selectBox.value = savedOutput;
         } catch (err) {
             console.error("Lỗi lấy thiết bị: ", err);
-             selectBox.innerHTML = '<option>This device (Default)</option>';
+            selectBox.innerHTML = '<option>This device (Default)</option>';
         }
     }
     getRealAudioDevices();
@@ -130,7 +151,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let currentVal = e.target.value;
         volumeText.textContent = `${currentVal}%`;
         updateSliderColor(volumeSlider);
-        
+
         if (currentVal == 0) {
             muteToggleBtn.innerHTML = ICON_MUTE;
             isMuted = true;
@@ -175,23 +196,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const bitrateSlider = document.getElementById('bitrate_slider');
     const bitrateText = document.getElementById('bitrate_text');
-    
+
     const savedBitrate = localLoader('SCFT_Bitrate', 12.5);
     bitrateSlider.value = savedBitrate;
     bitrateText.textContent = `${savedBitrate} mbps`;
-    updateSliderColor(bitrateSlider); 
+    updateSliderColor(bitrateSlider);
 
     bitrateSlider.addEventListener('input', (e) => {
         const currentVal = e.target.value;
         bitrateText.textContent = `${currentVal} mbps`;
-        updateSliderColor(bitrateSlider); 
+        updateSliderColor(bitrateSlider);
         localSaver('SCFT_Bitrate', currentVal);
     });
 
     const fpsRadios = document.querySelectorAll('input[name="fps"]');
     const savedFps = localLoader('SCFT_FPS', '60');
     fpsRadios.forEach(radio => {
-        if(radio.value === savedFps) radio.checked = true;
+        if (radio.value === savedFps) radio.checked = true;
 
         radio.addEventListener('change', (e) => {
             localSaver('SCFT_FPS', e.target.value);

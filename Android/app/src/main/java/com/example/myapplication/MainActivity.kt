@@ -1,6 +1,5 @@
 package com.example.myapplication
 
-import android.R
 import android.content.Context
 import android.content.ContentValues
 import android.content.Intent
@@ -15,10 +14,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,20 +29,26 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -54,6 +61,9 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.Icon
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -124,7 +134,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ScftApp(initialScreen: String?, initialDisplay: Int, initialDisplayId: String, initialBaseUrl: String, initialPresetId: String?, initialSessionId: String, initialGeneration: Long, initialAttempt: Int, autoStart: Boolean, modifier: Modifier = Modifier) {
     var currentScreen by rememberSaveable(initialScreen, initialSessionId, initialGeneration) {
-        mutableStateOf(if (initialScreen == "pc") "pc" else "transfer")
+        mutableStateOf(if (initialScreen == "pc") "pc" else "home")
     }
 
     if (currentScreen == "pc") {
@@ -134,13 +144,271 @@ fun ScftApp(initialScreen: String?, initialDisplay: Int, initialDisplayId: Strin
         return
     }
 
-    UsbFileTransferScreen(modifier = modifier, onOpenPcScreen = { currentScreen = "pc" })
+    if (currentScreen == "home") {
+        MobileHomeScreen(
+            modifier = modifier,
+            onOpenTransfer = { currentScreen = "transfer" },
+            onOpenPcScreen = { currentScreen = "pc" }
+        )
+    } else {
+        UsbFileTransferScreen(
+            modifier = modifier,
+            onOpenPcScreen = { currentScreen = "pc" },
+            onOpenHome = { currentScreen = "home" }
+        )
+    }
+}
+
+@Composable
+private fun MobileHomeScreen(
+    modifier: Modifier = Modifier,
+    onOpenTransfer: () -> Unit,
+    onOpenPcScreen: () -> Unit
+) {
+    var device by remember { mutableStateOf<PcDeviceInfo?>(null) }
+    var connection by remember { mutableStateOf<AndroidConnectionStatus?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+        try {
+            val snapshot = fetchPcConnectionInfo()
+            device = snapshot.device
+            connection = snapshot.connection
+            error = null
+        } catch (exception: Exception) {
+            device = null
+            connection = null
+            error = exception.message ?: "Không thể kết nối đến máy tính."
+        } finally {
+            loading = false
+        }
+        delay(5000)
+        }
+    }
+
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            MobileDrawerContent(
+                activeScreen = "home",
+                onHome = { drawerScope.launch { drawerState.close() } },
+                onTransfer = { drawerScope.launch { drawerState.close(); onOpenTransfer() } },
+                onScreen = { drawerScope.launch { drawerState.close(); onOpenPcScreen() } }
+            )
+        }
+    ) {
+    Scaffold(
+        modifier = modifier,
+        containerColor = AppBackground,
+        topBar = {
+            MobileHeader(onMenu = { drawerScope.launch { drawerState.open() } })
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(paddingValues)
+                .padding(horizontal = 20.dp, vertical = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "Trang chủ",
+                color = AppText,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+
+            PcConnectionCard(device = device, connection = connection, loading = loading, error = error)
+            UsbGuideCard()
+        }
+    }
+    }
+}
+
+@Composable
+private fun PcConnectionCard(
+    device: PcDeviceInfo?,
+    connection: AndroidConnectionStatus?,
+    loading: Boolean,
+    error: String?
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = AppSurface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = if (connection?.connected == true) "Máy tính đang kết nối" else "Chưa kết nối máy tính",
+                color = AppText,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            when {
+                loading -> Text("Đang kiểm tra kết nối...", color = AppMuted)
+                device != null && connection?.connected == true -> {
+                    Text("Tên máy: ${device.name}", color = AppText)
+                    Text("ID: ${device.id}", color = AppMuted)
+                    Text("IP: ${device.ip}:${device.port}", color = AppMuted)
+                    Text("Kết nối từ: ${formatConnectionTime(connection.connectedAt)}", color = AppMuted)
+                    Text("USB/ADB: Đã kết nối và được cấp quyền", color = AppSuccess)
+                }
+                else -> {
+                    Text("Hãy kết nối điện thoại qua USB và mở SCFT Desktop.", color = AppMuted)
+                    Text("Bật gỡ lỗi USB và chấp nhận thông báo trên điện thoại.", color = AppMuted)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileNavigationBar(
+    activeScreen: String,
+    onHome: () -> Unit,
+    onTransfer: () -> Unit,
+    onScreen: () -> Unit
+) {
+    Surface(color = AppSurface, shadowElevation = 1.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MobileNavButton("⌂", "Home", activeScreen == "home", onHome)
+            MobileNavButton("↔", "FT", activeScreen == "transfer", onTransfer)
+            MobileNavButton("▣", "SC", false, onScreen)
+        }
+    }
+}
+
+@Composable
+private fun RowScope.MobileNavButton(icon: String, label: String, active: Boolean, onClick: () -> Unit) {
+    val background = if (active) AppPrimarySoft else Color.Transparent
+    OutlinedButton(
+        modifier = Modifier.weight(1f),
+        onClick = onClick,
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = background,
+            contentColor = AppText
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (active) AppPrimary else AppBorder),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Text("$icon  $label", fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+    }
+}
+
+@Composable
+private fun MobileHeader(onMenu: () -> Unit) {
+    Surface(color = AppSurface, shadowElevation = 1.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("SCFT", color = AppText, fontWeight = FontWeight.Bold)
+                Text("Screen Copy & File Transfer", color = AppMuted, style = MaterialTheme.typography.labelMedium)
+            }
+            OutlinedButton(
+                onClick = onMenu,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AppText),
+                border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("☰", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileDrawerContent(
+    activeScreen: String,
+    onHome: () -> Unit,
+    onTransfer: () -> Unit,
+    onScreen: () -> Unit
+) {
+    ModalDrawerSheet {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("SCFT", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("Screen Copy & File Transfer", color = AppMuted)
+            Spacer(modifier = Modifier.height(12.dp))
+            MobileDrawerItem("home", "Trang chủ", activeScreen == "home", onHome)
+            MobileDrawerItem("transfer", "Truyền tệp", activeScreen == "transfer", onTransfer)
+            MobileDrawerItem("screen", "Màn hình PC", false, onScreen)
+        }
+    }
+}
+
+@Composable
+private fun MobileDrawerItem(
+    icon: String,
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    val background = if (active) Color(0xFFE5FCFF) else Color.Transparent
+    val contentColor = if (active) Color.Black else AppText
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(background)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 15.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        PcStyleNavIcon(icon, contentColor)
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(label, color = contentColor, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun PcStyleNavIcon(type: String, color: Color) {
+    val iconRes = when (type) {
+        "home" -> R.drawable.ic_home
+        "transfer" -> R.drawable.ic_open_folder
+        else -> R.drawable.ic_duplicate
+    }
+    Icon(
+        painter = painterResource(iconRes),
+        contentDescription = null,
+        tint = color,
+        modifier = Modifier.size(28.dp)
+    )
 }
 
 @Composable
 fun UsbFileTransferScreen(
     modifier: Modifier = Modifier,
-    onOpenPcScreen: () -> Unit
+    onOpenPcScreen: () -> Unit,
+    onOpenHome: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -192,8 +460,14 @@ fun UsbFileTransferScreen(
                 }
             }
             remoteFilesError = null
+            if (!uploading) {
+                status = "Đã kết nối USB/ADB, sẵn sàng truyền tệp."
+            }
         } catch (error: Exception) {
             remoteFilesError = error.message ?: "Không thể tải danh sách file."
+            if (!uploading) {
+                status = "Chưa kết nối USB/ADB hoặc SCFT Desktop chưa sẵn sàng."
+            }
         } finally {
             if (showLoading) {
                 loadingRemoteFiles = false
@@ -252,11 +526,27 @@ fun UsbFileTransferScreen(
             delay(2500)
         }
     }
+
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            MobileDrawerContent(
+                activeScreen = "transfer",
+                onHome = { drawerScope.launch { drawerState.close(); onOpenHome() } },
+                onTransfer = { drawerScope.launch { drawerState.close() } },
+                onScreen = { drawerScope.launch { drawerState.close(); onOpenPcScreen() } }
+            )
+        }
+    ) {
     Scaffold(
         modifier = modifier,
         containerColor = AppBackground,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
+            if (false) {
             Surface(color = AppSurface, shadowElevation = 1.dp) {
                 Row(
                     modifier = Modifier
@@ -274,7 +564,7 @@ fun UsbFileTransferScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Truyền tệp qua USB",
+                            text = "Screen Copy & File Transfer",
                             color = AppMuted,
                             style = MaterialTheme.typography.labelMedium
                         )
@@ -291,6 +581,8 @@ fun UsbFileTransferScreen(
                     }
                 }
             }
+            }
+            MobileHeader(onMenu = { drawerScope.launch { drawerState.open() } })
         }
     ) { paddingValues ->
         Column(
@@ -302,7 +594,7 @@ fun UsbFileTransferScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             TransferHeader()
-            ConnectionCard()
+            TransferStatusCard(status)
             FileSelectionCard(
                 selectedName = selectedName,
                 selectedSize = selectedSize,
@@ -321,6 +613,9 @@ fun UsbFileTransferScreen(
                         }
                         uploading = false
                         status = result
+                        if (!result.contains("thất bại", ignoreCase = true)) {
+                            snackbarHostState.showSnackbar("Đã gửi file lên máy tính.")
+                        }
                     }
                 },
                 canUpload = selectedUri != null && !uploading && (selectedSize ?: 0L) <= MAX_UPLOAD_BYTES
@@ -329,8 +624,6 @@ fun UsbFileTransferScreen(
             if (uploading) {
                 UploadProgress(progress)
             }
-
-            TransferStatusCard(status)
 
             RemoteFilesCard(
                 files = remoteFiles,
@@ -358,8 +651,8 @@ fun UsbFileTransferScreen(
                 }
             )
 
-            UsbGuideCard()
         }
+    }
     }
 }
 
@@ -522,7 +815,7 @@ private fun UploadProgress(progress: Float) {
 
 @Composable
 private fun TransferStatusCard(status: String) {
-    val isError = status.contains("lỗi", ignoreCase = true) || status.contains("thất bại", ignoreCase = true) || status.contains("vượt quá", ignoreCase = true)
+    val isError = status.contains("lỗi", ignoreCase = true) || status.contains("thất bại", ignoreCase = true) || status.contains("vượt quá", ignoreCase = true) || status.contains("Chưa kết nối", ignoreCase = true)
     val background = if (isError) AppWarningSoft else AppSuccessSoft
     val color = if (isError) AppWarning else AppSuccess
 
@@ -544,12 +837,44 @@ private fun TransferStatusCard(status: String) {
 
 @Composable
 private fun UsbGuideCard() {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Chuẩn bị USB", color = AppText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text("1. Dùng cáp có truyền dữ liệu", color = AppMuted, style = MaterialTheme.typography.bodySmall)
-        Text("2. Bật gỡ lỗi USB và xác nhận thông báo trên điện thoại", color = AppMuted, style = MaterialTheme.typography.bodySmall)
-        Text("3. Giữ SCFT Desktop đang chạy trong lúc gửi tệp", color = AppMuted, style = MaterialTheme.typography.bodySmall)
-        Spacer(modifier = Modifier.height(4.dp))
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = AppSurface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Chuẩn bị kết nối USB", color = AppText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("Làm đủ ba bước dưới đây để truyền tệp và màn hình ổn định.", color = AppMuted, style = MaterialTheme.typography.bodySmall)
+            UsbGuideStep("1", "Dùng cáp USB có truyền dữ liệu")
+            UsbGuideStep("2", "Bật gỡ lỗi USB và xác nhận thông báo trên điện thoại")
+            UsbGuideStep("3", "Giữ SCFT Desktop đang chạy trong lúc sử dụng")
+        }
+    }
+}
+
+@Composable
+private fun UsbGuideStep(number: String, text: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier.size(40.dp),
+            color = AppSurface,
+            shape = CircleShape,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color.Black)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+            Text(number, color = Color.Black, fontWeight = FontWeight.Bold)
+            }
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Text(text, color = AppMuted, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -823,6 +1148,73 @@ private suspend fun fetchRemoteFiles(): List<RemoteFile> =
         }
     }
 
+private suspend fun fetchPcDeviceInfo(): PcDeviceInfo =
+    withContext(Dispatchers.IO) {
+        val connection = (URL("$BACKEND_URL/api/device").openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 7000
+            connection.readTimeout = 10000
+            val responseCode = connection.responseCode
+            val body = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                .orEmpty()
+            if (responseCode !in 200..299) {
+                throw IOException("HTTP $responseCode")
+            }
+            val json = JSONObject(body)
+            PcDeviceInfo(
+                id = json.optString("id", "-"),
+                name = json.optString("name", "SCFT Desktop"),
+                ip = json.optString("ip", "-"),
+                port = json.optInt("port", 7878)
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+private suspend fun fetchPcConnectionInfo(): PcConnectionSnapshot =
+    withContext(Dispatchers.IO) {
+        val device = fetchPcDeviceInfo()
+        val connection = fetchAndroidConnectionStatus()
+        PcConnectionSnapshot(device, connection)
+    }
+
+private suspend fun fetchAndroidConnectionStatus(): AndroidConnectionStatus =
+    withContext(Dispatchers.IO) {
+        val connection = (URL("$BACKEND_URL/api/android/status").openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 7000
+            connection.readTimeout = 10000
+            val responseCode = connection.responseCode
+            val body = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()
+                ?.use { it.readText() }
+                .orEmpty()
+            if (responseCode !in 200..299) {
+                throw IOException("HTTP $responseCode")
+            }
+            val json = JSONObject(body)
+            AndroidConnectionStatus(
+                connected = json.optBoolean("connected", false),
+                deviceId = json.optString("deviceId"),
+                deviceName = json.optString("deviceName"),
+                connectedAt = json.optString("connectedAt").takeIf { it.isNotBlank() && it != "null" },
+                transport = json.optString("transport", "USB")
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+private fun formatConnectionTime(value: String?): String {
+    if (value.isNullOrBlank()) return "-"
+    return value.substringAfter('T').substringBefore('Z').take(8)
+}
+
 private suspend fun downloadRemoteFile(
     context: Context,
     file: RemoteFile,
@@ -910,6 +1302,26 @@ private data class RemoteFile(
     val senderDeviceId: String,
     val uploadedAt: String,
     val downloadUrl: String
+)
+
+private data class PcDeviceInfo(
+    val id: String,
+    val name: String,
+    val ip: String,
+    val port: Int
+)
+
+private data class PcConnectionSnapshot(
+    val device: PcDeviceInfo,
+    val connection: AndroidConnectionStatus
+)
+
+private data class AndroidConnectionStatus(
+    val connected: Boolean,
+    val deviceId: String,
+    val deviceName: String,
+    val connectedAt: String?,
+    val transport: String
 )
 
 private fun receivedFilePreferences(context: Context) =

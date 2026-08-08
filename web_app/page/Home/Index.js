@@ -8,7 +8,8 @@ const state = {
     backendOnline: false,
     androidOnline: false,
     captureOnline: false,
-    androidConnectedAt: null
+    androidConnectedAt: null,
+    androidDeviceId: ""
 };
 
 const elements = {};
@@ -162,13 +163,18 @@ async function checkAndroid() {
         const connected = devices
             .split(/\r?\n/)
             .map(line => line.trim())
-            .find(line => /\tdevice$/.test(line));
+            .find(line => isUsbAdbDeviceLine(line));
 
         if (!connected) {
+            if (state.androidDeviceId) {
+                localStorage.removeItem(`SCFT_AndroidConnectedAt_${state.androidDeviceId}`);
+            }
             state.androidOnline = false;
             state.captureOnline = false;
+            state.androidDeviceId = "";
             state.androidConnectedAt = null;
             elements.connectionTime.textContent = "-";
+            await syncAndroidStatus({ connected: false });
             setStatus(elements.capture, "Ngoại tuyến", "Sao chép màn hình chưa khả dụng", "Hãy kết nối điện thoại Android qua USB", false);
             setStatus(elements.android, "Ngoại tuyến", "Không có thiết bị Android đã được cấp quyền", "Kết nối USB và chấp nhận thông báo gỡ lỗi trên điện thoại", false);
             return;
@@ -177,22 +183,66 @@ async function checkAndroid() {
         const deviceId = connected.split("\t")[0];
         const properties = await runAdb(["-s", deviceId, "shell", "getprop"]);
         const deviceName = getAndroidDeviceName(deviceId, properties);
-        if (!state.androidOnline) {
-            state.androidConnectedAt = new Date();
+        const storageKey = `SCFT_AndroidConnectedAt_${deviceId}`;
+        const savedConnectedAtMs = Number(localStorage.getItem(storageKey));
+        const isNewDevice = !state.androidOnline || state.androidDeviceId !== deviceId;
+        if (isNewDevice) {
+            const connectedAtMs = savedConnectedAtMs > 0 ? savedConnectedAtMs : Date.now();
+            localStorage.setItem(storageKey, String(connectedAtMs));
+            state.androidConnectedAt = new Date(connectedAtMs);
         }
+        state.androidDeviceId = deviceId;
         state.androidOnline = true;
         state.captureOnline = true;
         elements.connectionTime.textContent = formatTime(state.androidConnectedAt);
+        await syncAndroidStatus({
+            connected: true,
+            deviceId,
+            deviceName,
+            connectedAtMs: state.androidConnectedAt.getTime()
+        });
         setStatus(elements.capture, "Sẵn sàng", "Sao chép màn hình khả dụng", "Sẵn sàng nhận màn hình Android", true);
         setStatus(elements.android, "Sẵn sàng", deviceName, "USB/ADB đã kết nối và được cấp quyền", true);
     } catch (error) {
         state.captureOnline = false;
         state.androidOnline = false;
+        state.androidDeviceId = "";
         setStatus(elements.capture, "Ngoại tuyến", "Sao chép màn hình chưa khả dụng", "Kiểm tra kết nối USB và ADB", false);
         state.androidConnectedAt = null;
         elements.connectionTime.textContent = "-";
+        await syncAndroidStatus({ connected: false });
         setStatus(elements.android, "Ngoại tuyến", "ADB chưa khả dụng", "Cài Android platform-tools hoặc đặt SCFT_ADB_PATH", false);
     }
+}
+
+async function syncAndroidStatus(status) {
+    try {
+        const params = new URLSearchParams({
+            connected: String(Boolean(status.connected))
+        });
+        if (status.connected) {
+            params.set("deviceId", status.deviceId);
+            params.set("deviceName", status.deviceName);
+            params.set("connectedAtMs", String(status.connectedAtMs));
+        }
+
+        await fetchWithTimeout(`${BACKEND_URL}/api/android/status?${params.toString()}`, {
+            method: "POST"
+        });
+    } catch (error) {
+        // Backend may be unavailable while ADB is still being discovered.
+    }
+}
+
+function isUsbAdbDeviceLine(line) {
+    const match = line.match(/^(\S+)\s+device$/);
+    if (!match) return false;
+
+    const deviceId = match[1];
+    const isEmulator = deviceId.startsWith("emulator-");
+    const isWirelessAdb = deviceId.includes(":");
+
+    return !isEmulator && !isWirelessAdb;
 }
 
 function getAndroidDeviceName(deviceId, properties) {
@@ -311,11 +361,12 @@ function formatTransferSpeed(bytesPerSecond) {
     return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
 }
 
-function fetchWithTimeout(url) {
+function fetchWithTimeout(url, options = {}) {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 2500);
 
-    return fetch(url, { signal: controller.signal }).finally(() => window.clearTimeout(timer));
+    return fetch(url, { ...options, signal: controller.signal })
+        .finally(() => window.clearTimeout(timer));
 }
 
 function runAdb(args) {
