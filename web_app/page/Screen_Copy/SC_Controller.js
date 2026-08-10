@@ -77,11 +77,11 @@ class SCController {
         this.currentX = coords.x;
         this.currentY = coords.y;
 
-        // Eliminate command queue backlog: Only send MOVE if moved >= 4px from last sent point
+        // Eliminate command queue backlog: Only send MOVE if moved >= 2px from last sent point
         const dist = Math.hypot(coords.x - this.lastSentX, coords.y - this.lastSentY);
-        if (dist >= 4) {
+        if (dist >= 2) {
             const now = Date.now();
-            if (now - this.lastMoveTime >= 25) { // 40 FPS queue-free rate
+            if (now - this.lastMoveTime >= 16) { // ~60 FPS queue-free rate
                 this.lastMoveTime = now;
                 this.lastSentX = coords.x;
                 this.lastSentY = coords.y;

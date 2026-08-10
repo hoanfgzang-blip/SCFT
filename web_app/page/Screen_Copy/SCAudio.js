@@ -1,44 +1,49 @@
 let nodePath = null;
 let nodeFs = null;
-let nodeNet = null;
 let nodeChildProcess = null;
 
 try {
     if (typeof require !== "undefined") {
         nodePath = require("path");
         nodeFs = require("fs");
-        nodeNet = require("net");
         nodeChildProcess = require("child_process");
     } else if (typeof window !== "undefined" && window.require) {
         nodePath = window.require("path");
         nodeFs = window.require("fs");
-        nodeNet = window.require("net");
         nodeChildProcess = window.require("child_process");
     }
 } catch (e) {}
 
+/**
+ * SCAudioManager — Option A: adb exec-out stdout PCM pipe
+ *
+ * Architecture (simple, no sockets):
+ *   Phone: app_process runs SimpleAudioCapture → writes raw PCM to stdout
+ *   PC:    adb exec-out pipes that stdout directly to Node.js
+ *   PC:    Node.js feeds chunks to WebAudio API → PC speakers
+ *
+ * Requires: build-resources/scft-simple-audio.jar (build with build-audio-jar.ps1)
+ */
 class SCAudioManager {
     constructor() {
         this.active = false;
         this.audioContext = null;
         this.gainNode = null;
-        this.tcpSocket = null;
-        this.serverProcess = null;
+        this.adbProcess = null;  // adb exec-out process
         this.nextStartTime = 0;
         this.pcmRemainder = null;
         this.receivedFrames = 0;
-        this.headerSkipped = false;
-        this.serverJarPath = this.resolveServerJarPath();
+        this.simpleJarPath = this.resolveSimpleJarPath();
     }
 
-    resolveServerJarPath() {
+    resolveSimpleJarPath() {
         try {
             if (!nodePath || !nodeFs) return null;
             const dirName = (typeof __dirname !== "undefined") ? __dirname : "";
             const candidates = [
-                nodePath.join(dirName, "..", "..", "..", "build-resources", "scft-audio.jar"),
-                nodePath.join(process.cwd ? process.cwd() : "", "build-resources", "scft-audio.jar"),
-                nodePath.join(process.resourcesPath || "", "scft-audio.jar")
+                nodePath.join(dirName, "..", "..", "..", "build-resources", "scft-simple-audio.jar"),
+                nodePath.join(process.cwd ? process.cwd() : "", "build-resources", "scft-simple-audio.jar"),
+                nodePath.join(process.resourcesPath || "", "scft-simple-audio.jar")
             ];
             for (const c of candidates) {
                 if (nodeFs.existsSync(c)) return c;
@@ -69,129 +74,115 @@ class SCAudioManager {
     async startAudioShare(runAdbFn) {
         try {
             if (!this.isAudioShareEnabled()) {
-                console.log("[SCAudioManager] Audio share is disabled in settings. Doing nothing.");
                 this.updateAudioStatus("Tắt (Không chia sẻ)");
                 return false;
             }
 
             if (this.active) return true;
 
-            console.log("[SCAudioManager] Audio share is ENABLED. Pushing scft-audio.jar...");
-            this.updateAudioStatus("Đang mở luồng âm thanh...");
+            this.updateAudioStatus("Đang khởi động âm thanh...");
             this.receivedFrames = 0;
-            this.headerSkipped = false;
 
-            const adbBin = (typeof process !== "undefined" && process.env.SCFT_ADB_PATH) ? process.env.SCFT_ADB_PATH : "adb";
+            const adbBin = (typeof process !== "undefined" && process.env.SCFT_ADB_PATH)
+                ? process.env.SCFT_ADB_PATH : "adb";
 
-            if (typeof runAdbFn === "function") {
-                // 1. Push DEX server jar to phone
-                const jarFile = this.serverJarPath || this.resolveServerJarPath();
-                if (jarFile) {
-                    try {
-                        await runAdbFn(["push", jarFile, "/data/local/tmp/scft-audio.jar"]);
-                        console.log("[SCAudioManager] Pushed scft-audio.jar to phone successfully.");
-                    } catch (pushErr) {
-                        console.warn("[SCAudioManager] ADB push note:", pushErr.message);
-                    }
-                }
-
-                // 2. Setup ADB forward tcp:10790 to abstract socket scrcpy_audio
-                try {
-                    await runAdbFn(["forward", "tcp:10790", "localabstract:scrcpy_audio"]);
-                } catch (fwdErr) {
-                    console.warn("[SCAudioManager] ADB forward note:", fwdErr.message);
-                }
-
-                // 3. Spawn background app_process on phone under Shell UID 2000 using non-blocking spawn
-                try {
-                    const shellCmd = "CLASSPATH=/data/local/tmp/scft-audio.jar app_process / com.genymobile.scrcpy.Server 3.3.4 log_level=info video=false audio=true audio_codec=raw audio_encoder=pcm control=false tunnel_forward=true";
-                    if (nodeChildProcess) {
-                        this.serverProcess = nodeChildProcess.spawn(adbBin, ["shell", shellCmd], { windowsHide: true });
-                        this.serverProcess.stderr.on("data", (d) => console.warn("[AudioServer stderr]:", d.toString()));
-                    } else {
-                        runAdbFn(["shell", shellCmd]).catch(() => {});
-                    }
-                    console.log("[SCAudioManager] Spawned background scft-audio.jar app_process over ADB.");
-                } catch (err) {
-                    console.warn("[SCAudioManager] Error spawning scft-audio.jar:", err.message);
-                }
+            // Step 1: Find and push the simple audio JAR
+            const jarFile = this.simpleJarPath || this.resolveSimpleJarPath();
+            if (!jarFile) {
+                console.error("[SCAudioManager] scft-simple-audio.jar NOT FOUND. Build it with build-resources/audio-engine/build-audio-jar.ps1");
+                this.updateAudioStatus("Lỗi: Chưa build scft-simple-audio.jar");
+                return false;
             }
 
-            // 4. Initialize PC Web Audio Context & Gain Node
+            console.log("[SCAudioManager] Found JAR:", jarFile);
+            this.updateAudioStatus("Đang push JAR lên thiết bị...");
+
             try {
-                const AudioContextClass = (typeof window !== "undefined") ? (window.AudioContext || window.webkitAudioContext) : null;
+                await runAdbFn(["push", jarFile, "/data/local/tmp/scft-simple-audio.jar"]);
+                console.log("[SCAudioManager] Pushed scft-simple-audio.jar to phone.");
+            } catch (pushErr) {
+                console.warn("[SCAudioManager] ADB push error:", pushErr.message);
+                this.updateAudioStatus("Lỗi push JAR: " + pushErr.message.substring(0, 50));
+                return false;
+            }
+
+            // Step 2: Initialize WebAudio on PC
+            try {
+                const AudioContextClass = (typeof window !== "undefined")
+                    ? (window.AudioContext || window.webkitAudioContext) : null;
                 if (AudioContextClass) {
                     this.audioContext = new AudioContextClass({ sampleRate: 48000 });
                     this.gainNode = this.audioContext.createGain();
-                    const currentVol = this.getSystemVolumeSetting();
-                    this.gainNode.gain.setValueAtTime(currentVol, this.audioContext.currentTime);
+                    this.gainNode.gain.setValueAtTime(this.getSystemVolumeSetting(), this.audioContext.currentTime);
                     this.gainNode.connect(this.audioContext.destination);
-
                     if (this.audioContext.state === "suspended") {
                         await this.audioContext.resume();
                     }
-
-                    const outputDeviceId = (typeof localStorage !== "undefined") ? localStorage.getItem("SCFT_OutputDevice") : null;
+                    const outputDeviceId = (typeof localStorage !== "undefined")
+                        ? localStorage.getItem("SCFT_OutputDevice") : null;
                     if (outputDeviceId && this.audioContext.setSinkId) {
                         await this.audioContext.setSinkId(outputDeviceId);
                     }
                     this.nextStartTime = this.audioContext.currentTime;
+                    console.log("[SCAudioManager] WebAudio context ready, sampleRate=48000");
                 }
             } catch (err) {
-                console.warn("[SCAudioManager] Error setting up PC audio context:", err.message);
+                console.warn("[SCAudioManager] WebAudio setup error:", err.message);
             }
 
-            // 5. Connect TCP socket to receive internal PCM system audio stream
-            if (nodeNet) {
-                this.connectTcpStream(runAdbFn);
-            }
-
+            // Step 3: Launch app_process via adb exec-out, read raw PCM from stdout
+            // Key insight: no TCP socket needed — PCM streams directly through adb pipe
             this.active = true;
+            this.updateAudioStatus("Đang kết nối luồng âm thanh...");
+
+            if (nodeChildProcess) {
+                const shellCmd = "CLASSPATH=/data/local/tmp/scft-simple-audio.jar app_process / com.scft.audio.SimpleAudioCapture";
+                console.log("[SCAudioManager] Spawning: adb exec-out", shellCmd);
+
+                this.adbProcess = nodeChildProcess.spawn(adbBin, ["exec-out", shellCmd], {
+                    windowsHide: true
+                });
+
+                this.adbProcess.stdout.on("data", (chunk) => {
+                    if (!this.active) return;
+                    this.playPcmChunk(chunk);
+                });
+
+                this.adbProcess.stderr.on("data", (d) => {
+                    const msg = d.toString().trim();
+                    if (!msg) return;
+                    console.log("[SCAudioManager stderr]:", msg);
+                    if (msg.includes("Recording started")) {
+                        this.updateAudioStatus("Đang phát âm thanh hệ thống 🔊");
+                    } else if (msg.includes("not available") || msg.includes("failed to initialize")) {
+                        this.updateAudioStatus("Lỗi: REMOTE_SUBMIX không khả dụng");
+                    } else if (msg.toLowerCase().includes("error") || msg.toLowerCase().includes("exception")) {
+                        this.updateAudioStatus("Lỗi: " + msg.substring(0, 60));
+                    }
+                });
+
+                this.adbProcess.on("error", (err) => {
+                    console.error("[SCAudioManager] adb exec-out error:", err.message);
+                    this.updateAudioStatus("Lỗi ADB: " + err.message.substring(0, 60));
+                });
+
+                this.adbProcess.on("close", (code) => {
+                    console.log("[SCAudioManager] adb exec-out exited, code:", code);
+                    if (this.active) {
+                        this.updateAudioStatus("Luồng âm thanh kết thúc (code " + code + ")");
+                        this.active = false;
+                    }
+                });
+
+                console.log("[SCAudioManager] Option A: adb exec-out PCM pipe started.");
+            }
+
             return true;
         } catch (globalErr) {
             console.warn("[SCAudioManager] startAudioShare error:", globalErr);
-            this.updateAudioStatus("Tắt (Lỗi mở âm thanh)");
+            this.updateAudioStatus("Lỗi khởi động âm thanh");
             return false;
         }
-    }
-
-    connectTcpStream(runAdbFn, retries = 5) {
-        if (!nodeNet) return;
-        if (this.tcpSocket) {
-            try { this.tcpSocket.destroy(); } catch (e) {}
-            this.tcpSocket = null;
-        }
-
-        try {
-            const socket = nodeNet.createConnection({ port: 10790, host: "127.0.0.1" }, () => {
-                console.log("[SCAudioManager] Connected to scft-audio.jar TCP socket (127.0.0.1:10790).");
-                this.updateAudioStatus("Đã kết nối âm thanh hệ thống -> Loa PC 🔊");
-            });
-
-            this.tcpSocket = socket;
-
-            socket.on("data", (chunk) => {
-                if (!this.headerSkipped) {
-                    if (chunk.length >= 64) {
-                        this.headerSkipped = true;
-                        chunk = chunk.slice(64);
-                    } else {
-                        return;
-                    }
-                }
-                if (chunk.length > 0) {
-                    this.playPcmChunk(chunk);
-                }
-            });
-
-            socket.on("error", (err) => {
-                if (retries > 0 && this.active) {
-                    setTimeout(() => this.connectTcpStream(runAdbFn, retries - 1), 1000);
-                }
-            });
-
-            socket.on("close", () => {});
-        } catch (err) {}
     }
 
     playPcmChunk(chunk) {
@@ -258,25 +249,15 @@ class SCAudioManager {
     async stopAudioShare(runAdbFn) {
         if (!this.active) return;
         this.active = false;
-
         this.updateAudioStatus("Đã tắt");
 
-        if (this.serverProcess) {
-            try {
-                this.serverProcess.kill();
-            } catch (e) {}
-            this.serverProcess = null;
-        }
-
-        if (this.tcpSocket) {
-            try { this.tcpSocket.destroy(); } catch (e) {}
-            this.tcpSocket = null;
+        if (this.adbProcess) {
+            try { this.adbProcess.kill(); } catch (e) {}
+            this.adbProcess = null;
         }
 
         if (this.audioContext) {
-            try {
-                await this.audioContext.close();
-            } catch (e) {}
+            try { await this.audioContext.close(); } catch (e) {}
             this.audioContext = null;
             this.gainNode = null;
         }

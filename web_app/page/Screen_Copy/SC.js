@@ -286,7 +286,13 @@ function sendSocketCommand(cmdStr) {
     const parts = cmdStr.trim().split(" ");
     const type = parts[0];
 
-    // 1. Write directly to Java Socket server if connected
+    // MOVE events: bypass Java TCP server, send directly to ADB shell for minimum latency
+    if (type === "MOVE" && parts.length >= 3) {
+        sendAdbShellCommand(`cmd input motionevent MOVE ${parts[1]} ${parts[2]}`);
+        return;
+    }
+
+    // 1. Write directly to Java Socket server if connected (for non-MOVE commands)
     if (controlSocket && !controlSocket.destroyed) {
         try {
             controlSocket.write(cmdStr + "\n");
