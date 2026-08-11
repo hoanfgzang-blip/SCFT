@@ -20,16 +20,17 @@ let pcScreenActive = null;
 let pcScreenMonitorTimer = null;
 let pcScreenMonitorBusy = false;
 let pcScreenRecoveryPromise = null;
+let vddTopologySessionActive = false;
 const VDD_WINGET_ID = 'VirtualDrivers.Virtual-Display-Driver';
 const VDD_VERSION = '25.7.23';
 const VDD_RELEASE_URL = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases';
 
-function waitForVirtualDisplay(timeoutMs) {
+function waitForVirtualDisplay(timeoutMs, minimumDisplays = 2) {
     return new Promise(resolve => {
         const deadline = Date.now() + timeoutMs;
         const check = () => {
-            if (screen.getAllDisplays().length > 1 || Date.now() >= deadline) {
-                resolve(screen.getAllDisplays().length > 1);
+            if (screen.getAllDisplays().length >= minimumDisplays || Date.now() >= deadline) {
+                resolve(screen.getAllDisplays().length >= minimumDisplays);
                 return;
             }
             setTimeout(check, 250);
@@ -61,9 +62,12 @@ async function getVddDeviceStatus() {
         const blocks = output.split(/(?=Instance ID:\s*)/gi);
         const vddBlocks = blocks.filter(block => /Device Description:\s+Virtual Display Driver/i.test(block));
         const started = vddBlocks.filter(block => /Status:\s+Started/i.test(block));
-        return { installed: vddBlocks.length > 0, nodeCount: vddBlocks.length, startedCount: started.length, output };
+        const instanceIds = vddBlocks
+            .map(block => block.match(/Instance ID:\s+([^\r\n]+)/i)?.[1]?.trim())
+            .filter(Boolean);
+        return { installed: vddBlocks.length > 0, nodeCount: vddBlocks.length, startedCount: started.length, instanceIds, output };
     } catch (_) {
-        return { installed: false, nodeCount: 0, startedCount: 0, output: '' };
+        return { installed: false, nodeCount: 0, startedCount: 0, instanceIds: [], output: '' };
     }
 }
 
@@ -148,24 +152,32 @@ function launchVddControl() {
     return true;
 }
 
-function setVddDisplayCount(count = 1) {
-    const safeCount = Math.max(0, Math.min(1, Math.floor(Number(count) || 0)));
+async function isVddDisplayAttached() {
     const command = `
-$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'MTTVirtualDisplayPipe', [System.IO.Pipes.PipeDirection]::Out)
-$pipe.Connect(3000)
-$bytes = [System.Text.Encoding]::Unicode.GetBytes('SETDISPLAYCOUNT ${safeCount}')
-$pipe.Write($bytes, 0, $bytes.Length)
-$pipe.Flush()
-$pipe.Dispose()
-`;
-    return runExternal('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        command
-    ], { timeout: 10000 });
+$code=@"
+using System;
+using System.Runtime.InteropServices;
+public static class ScftVddTopologyApi {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct DISPLAY_DEVICE { public int cb; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string DeviceName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string DeviceString; public int StateFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string DeviceID; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string DeviceKey; }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool EnumDisplayDevices(IntPtr lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
+}
+"@;
+Add-Type $code;
+for($i=0;$i -lt 20;$i++){
+  $d=New-Object ScftVddTopologyApi+DISPLAY_DEVICE;
+  $d.cb=[Runtime.InteropServices.Marshal]::SizeOf([type]'ScftVddTopologyApi+DISPLAY_DEVICE');
+  if(-not [ScftVddTopologyApi]::EnumDisplayDevices([IntPtr]::Zero,$i,[ref]$d,0)){ break }
+  if(($d.DeviceString -match '^(Virtual Display Driver|SCFT Virtual Display)$' -or $d.DeviceID -match '^Root\\MttVDD$|SCFTVirtualDisplayDriver') -and (($d.StateFlags -band 1) -ne 0)){
+    Write-Output 'SCFT_VDD_ATTACHED'; break
+  }
+}`;
+    const output = await runExternal('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { timeout: 10000 });
+    return output.includes('SCFT_VDD_ATTACHED');
+}
+
+function setWindowsDisplayTopology(mode) {
+    if (!['extend', 'internal'].includes(mode)) throw new Error(`Unsupported display topology: ${mode}`);
+    return runExternal('DisplaySwitch.exe', [`/${mode}`], { timeout: 15000 });
 }
 
 function startVddRepair() {
@@ -179,7 +191,7 @@ function startVddRepair() {
     const escapedScriptPath = scriptPath.replace(/'/g, "''");
     const command = [
         `$scriptPath = '${escapedScriptPath}'`,
-        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath) -Wait -PassThru",
+        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath) -Wait -PassThru",
         'exit $process.ExitCode'
     ].join('; ');
 
@@ -188,6 +200,7 @@ function startVddRepair() {
 
 async function ensureVirtualDisplay() {
     let status = await getVddDeviceStatus();
+    const displayCountBefore = screen.getAllDisplays().length;
     if (status.nodeCount > 1) {
         const error = new Error(`Windows đang có ${status.nodeCount} node Virtual Display Driver bị trùng. Hãy gỡ sạch VDD bằng PowerShell Administrator rồi cài lại một lần.`);
         error.code = 'VDD_DUPLICATE_DEVICES';
@@ -196,28 +209,27 @@ async function ensureVirtualDisplay() {
     }
 
     if (!status.installed) {
-        await installVdd();
+        await startVddRepair();
         status = await getVddDeviceStatus();
-        if (status.nodeCount > 1) {
-            const error = new Error(`Windows đang có ${status.nodeCount} node Virtual Display Driver bị trùng. Hãy gỡ sạch VDD bằng PowerShell Administrator rồi cài lại một lần.`);
-            error.code = 'VDD_DUPLICATE_DEVICES';
-            error.vddNodeCount = status.nodeCount;
-            throw error;
-        }
     }
 
-    const controlOpened = launchVddControl();
-    try {
-        // VDD creates the PnP node during install, but the node only becomes
-        // an active Windows display after SETDISPLAYCOUNT 1 is sent over its
-        // named pipe. This also avoids asking users to open VDD Control and
-        // press a second Enable/Install button after a reboot.
-        await setVddDisplayCount(1);
-    } catch (_) {
-        // The pipe may need a moment to start; the display wait below remains
-        // the authoritative readiness check.
+    if (!status.installed || status.startedCount < 1) {
+        const error = new Error('VDD cần khởi động lại Windows một lần sau khi cài/sửa driver.');
+        error.code = 'VDD_REBOOT_REQUIRED';
+        throw error;
     }
-    const appeared = await waitForVirtualDisplay(controlOpened ? 60000 : 15000);
+
+    const wasAttached = await isVddDisplayAttached();
+    const physicalDisplayCount = displayCountBefore - (wasAttached ? 1 : 0);
+    if (physicalDisplayCount > 1) {
+        const error = new Error('Hãy ngắt màn hình rời trước khi dùng màn hình phụ VDD để SCFT có thể tắt riêng topology an toàn.');
+        error.code = 'VDD_EXTERNAL_DISPLAY_CONFLICT';
+        throw error;
+    }
+
+    await setWindowsDisplayTopology('extend');
+    const minimumDisplays = wasAttached ? Math.max(2, displayCountBefore) : displayCountBefore + 1;
+    const appeared = await waitForVirtualDisplay(15000, minimumDisplays);
     if (!appeared) {
         status = await getVddDeviceStatus();
         if (status.nodeCount > 1) {
@@ -226,10 +238,8 @@ async function ensureVirtualDisplay() {
             error.vddNodeCount = status.nodeCount;
             throw error;
         }
-        const error = new Error(controlOpened
-            ? 'VDD Control đã mở nhưng Windows chưa nhận màn hình ảo. Hãy bấm Install/Enable trong VDD Control rồi thử lại.'
-            : 'Virtual Display Driver đã cài nhưng chưa tìm thấy VDD Control. Hãy mở VDD Control từ gói driver rồi bấm Install/Enable.');
-        error.code = 'VDD_NOT_READY';
+        const error = new Error('Windows chưa đưa màn hình VDD vào topology. Hãy khởi động lại máy một lần rồi thử lại.');
+        error.code = 'VDD_REBOOT_REQUIRED';
         throw error;
     }
 
@@ -240,7 +250,9 @@ async function ensureVirtualDisplay() {
         throw error;
     }
 
+    vddTopologySessionActive = true;
     await setVirtualDisplayMode();
+    await restartBackendForDisplayChange(minimumDisplays);
     return { ready: true, displays: screen.getAllDisplays().length, driverInstalled: true };
 }
 
@@ -322,10 +334,26 @@ async function startVirtualDisplay() {
     return ensureVirtualDisplay();
 }
 
-function stopVirtualDisplay() {
-    // Stopping a session must not uninstall or disable VDD. Windows may still
-    // have application windows positioned on the virtual monitor.
-    return Promise.resolve({ stopped: true, driverKept: true });
+async function stopVirtualDisplay() {
+    const attached = await isVddDisplayAttached().catch(() => vddTopologySessionActive);
+    if (!attached && !vddTopologySessionActive) return { stopped: false, displayAttached: false };
+    await setWindowsDisplayTopology('internal');
+    vddTopologySessionActive = false;
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await restartBackendForDisplayChange(1);
+    return { stopped: true, displayAttached: false };
+}
+
+async function detachStaleVirtualDisplayOnStartup() {
+    const attached = await isVddDisplayAttached().catch(() => false);
+    if (!attached) return false;
+
+    const physicalDisplayCount = Math.max(0, screen.getAllDisplays().length - 1);
+    if (physicalDisplayCount !== 1) return false;
+
+    await setWindowsDisplayTopology('internal');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return true;
 }
 
 function getBundledResourcePath(name) {
@@ -429,21 +457,62 @@ function startBackend() {
         backendArgs.push('-JavaExe', runtimePaths.java);
     }
 
-    backendProcess = spawn('powershell.exe', backendArgs, {
+    const child = spawn('powershell.exe', backendArgs, {
         cwd: __dirname,
         windowsHide: true,
         stdio: 'ignore'
     });
+    backendProcess = child;
 
-    backendProcess.on('exit', () => {
-        backendProcess = null;
+    child.on('exit', () => {
+        if (backendProcess === child) backendProcess = null;
     });
 }
 
 function stopBackend() {
     if (!backendProcess) return;
-    backendProcess.kill();
+    const processToStop = backendProcess;
     backendProcess = null;
+    const pid = Number(processToStop.pid);
+    if (Number.isInteger(pid) && pid > 0) {
+        try {
+            execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+                windowsHide: true,
+                stdio: 'ignore'
+            });
+            return;
+        } catch (_) {
+        }
+    }
+    try {
+        processToStop.kill();
+    } catch (_) {
+    }
+}
+
+async function restartBackendForDisplayChange(minimumDisplays = 1) {
+    stopBackend();
+    await new Promise(resolve => setTimeout(resolve, 250));
+    startBackend();
+
+    const deadline = Date.now() + 15000;
+    let lastStatus = null;
+    while (Date.now() < deadline) {
+        try {
+            const response = await fetch('http://127.0.0.1:7878/api/screen/status');
+            if (response.ok) {
+                lastStatus = await response.json();
+                if (Number(lastStatus.displays || 0) >= minimumDisplays) return lastStatus;
+            }
+        } catch (_) {
+        }
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+
+    const error = new Error('Backend khong cap nhat duoc danh sach man hinh sau khi thay doi VDD.');
+    error.code = 'VDD_BACKEND_REFRESH_FAILED';
+    error.status = lastStatus;
+    throw error;
 }
 
 function getAdbCandidates() {
@@ -571,6 +640,34 @@ async function backendJson(url, options = {}) {
         throw error;
     }
     return body;
+}
+
+async function resolvePcScreenDisplayConfig(config, screensBefore = []) {
+    const previousIds = new Set(screensBefore.map(item => String(item?.id || '')));
+    const deadline = Date.now() + 10000;
+    let screens = [];
+
+    while (Date.now() < deadline) {
+        const status = await backendJson('http://127.0.0.1:7878/api/screen/status').catch(() => null);
+        screens = Array.isArray(status?.screens) ? status.screens : [];
+        const newScreen = screens.find(item => !previousIds.has(String(item?.id || '')));
+        if (newScreen) {
+            return { ...config, displayIndex: Number(newScreen.index), displayId: newScreen.id || '' };
+        }
+        if (screens.length > screensBefore.length) break;
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+
+    const requested = screens.find(item => String(item?.id || '') === String(config.displayId || ''));
+    if (requested) {
+        return { ...config, displayIndex: Number(requested.index), displayId: requested.id || '' };
+    }
+
+    const secondary = screens.find(item => Number(item?.index) !== 0);
+    if (secondary) {
+        return { ...config, displayIndex: Number(secondary.index), displayId: secondary.id || '' };
+    }
+    return { ...config };
 }
 
 async function deleteBackendSession(sessionId) {
@@ -740,8 +837,10 @@ async function applyPcScreen(event, config) {
     let activeSessionId = '';
     let serial = null;
     try {
+        const statusBefore = await backendJson('http://127.0.0.1:7878/api/screen/status').catch(() => ({ screens: [] }));
         emitPcScreenProgress(event, 'driver', 'Đang kiểm tra màn hình ảo...');
         await ensureVirtualDisplay();
+        config = await resolvePcScreenDisplayConfig(config, Array.isArray(statusBefore.screens) ? statusBefore.screens : []);
         assertPcScreenOperation(operation);
         emitPcScreenProgress(event, 'adb', 'Đang kiểm tra điện thoại USB/ADB...');
         serial = await getAuthorizedAdbDevice();
@@ -771,6 +870,7 @@ async function applyPcScreen(event, config) {
         const presets = [requestedPreset, requestedPreset];
         if (requestedPreset !== 'zero_latency') presets.push('zero_latency');
         let previousPreset = '';
+        let lastFailedSession = null;
         for (let index = 0; index < presets.length; index++) {
             assertPcScreenOperation(operation);
             const presetId = presets[index];
@@ -798,16 +898,24 @@ async function applyPcScreen(event, config) {
                 startPcScreenMonitor(event, serial, config, presetId, activeSessionId);
                 return { ...result.session, requestedPreset, effectivePreset: presetId };
             }
+            lastFailedSession = result.session || lastFailedSession;
             if (index < presets.length - 1) {
                 await deleteBackendSession(activeSessionId);
                 activeSessionId = '';
             }
         }
         const error = new Error('Không thể nhận frame H264. Hãy kiểm tra điện thoại, cáp USB rồi bấm Thử lại.');
-        error.code = 'STARTUP_TIMEOUT';
+        error.code = lastFailedSession?.errorCode || 'STARTUP_TIMEOUT';
+        if (lastFailedSession?.errorMessage) error.message = lastFailedSession.errorMessage;
         throw error;
     } catch (error) {
         await runAdbPromise(['-s', serial, 'shell', 'am', 'force-stop', 'com.example.myapplication']).catch(() => {});
+        await deleteBackendSession(activeSessionId);
+        await stopVirtualDisplay().catch(() => {});
+        activeSessionId = '';
+        if (error.code !== 'PC_SCREEN_STOPPED') {
+            emitPcScreenProgress(event, 'error', error.message || 'Không thể khởi động PC Screen.', { code: error.code || 'PC_SCREEN_ERROR' });
+        }
         throw error;
     } finally {
         pcScreenOperation = null;
@@ -824,8 +932,9 @@ async function stopPcScreen(event) {
     if (serial) await runAdbPromise(['-s', serial, 'shell', 'am', 'force-stop', 'com.example.myapplication']).catch(() => {});
     await deleteBackendSession('');
     if (recovery) await recovery.catch(() => {});
-    emitPcScreenProgress(event, 'stopped', 'Đã dừng truyền hình. Màn hình ảo vẫn được giữ lại.');
-    return { stopped: true, driverKept: true };
+    await stopVirtualDisplay();
+    emitPcScreenProgress(event, 'stopped', 'Đã dừng truyền hình và ngắt màn hình ảo VDD khỏi desktop.');
+    return { stopped: true, displayAttached: false };
 }
 
 function createWindow() {
@@ -873,8 +982,9 @@ function createPopoutWindow(adbPath) {
     });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
     prepareBundledRuntime();
+    await detachStaleVirtualDisplayOnStartup().catch(() => {});
     startBackend();
     startUsbTunnel();
     createWindow();
@@ -906,6 +1016,10 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => {
+    if (vddTopologySessionActive) {
+        execFile('DisplaySwitch.exe', ['/internal'], { windowsHide: true }, () => {});
+        vddTopologySessionActive = false;
+    }
     stopBackend();
 });
 

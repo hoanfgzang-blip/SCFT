@@ -162,7 +162,7 @@ Windows VDD -> man hinh phu that cua Windows
              -> ung dung SCFT Android
 ```
 
-Mo trang `PCScreen.html`, bam `Bat dau`. SCFT se kiem tra/cai Virtual Display Driver qua WinGet, mo VDD Control neu can va cho man hinh ao xuat hien. Lan dau nguoi dung bam `Install/Enable` trong VDD Control va chap nhan UAC. Sau do chon `Extend these displays` trong Windows Display Settings.
+Mo trang `PCScreen.html`, bam `Bat dau`. SCFT se chuyen Windows sang topology Extend de gan man hinh VDD cho phien truyen, sau do tu chon man hinh ao vua xuat hien. Khi bam `Ket thuc`, khi khoi dong phien that bai hoac khi thoat SCFT, Windows tro ve topology Internal; man hinh ao khong con xuat hien va trang thai nay duoc giu sau khi khoi dong lai. Driver VDD van duoc cai san vi ban driver ky hien tai khong ho tro go/nap lai an toan trong tung phien.
 
 Khi dien thoai da bat USB debugging va chap nhan khoa ADB, SCFT tu chay `adb reverse tcp:7878 tcp:7878` roi mo PC Screen tren Android. Khong can Test Mode va khong can HDMI dummy.
 

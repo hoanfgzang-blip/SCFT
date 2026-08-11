@@ -12,6 +12,7 @@ const state = {
     backendRetryTimer: null,
     backendRetryCount: 0,
     warmupRequested: false,
+    usbConnectionState: "checking",
     adbPath: null,
     applying: false,
     operationStep: "idle",
@@ -39,6 +40,7 @@ function bindElements() {
     elements.badge = document.getElementById("screen_status_badge");
     elements.message = document.getElementById("screen_message");
     elements.frameStatus = document.getElementById("frame_status_text");
+    elements.emptyPreview = document.getElementById("empty_preview");
     elements.usbUrl = document.getElementById("usb_url_text");
     elements.lanUrl = document.getElementById("lan_url_text");
     elements.displays = document.getElementById("display_count_text");
@@ -63,12 +65,33 @@ function bindEvents() {
     ipcRenderer.on("scft-pc-screen-progress", (_event, progress) => {
         state.operationStep = progress?.step || "working";
         state.operationMessage = progress?.message || "";
-        if (progress?.step === "streaming") {
+        if (progress?.step === "adb") {
+            state.usbConnectionState = "checking";
+            renderUsbStatus();
+            setMessage(progress.message, "success");
+        } else if (progress?.step === "usb") {
+            state.usbConnectionState = "reversing";
+            renderUsbStatus();
+            setMessage(progress.message, "success");
+        } else if (progress?.step === "streaming") {
+            state.usbConnectionState = "ready";
+            renderUsbStatus();
             state.lastErrorCode = "";
             startSessionPolling();
             pollSessionOnce();
             setMessage(progress.message, "success");
+        } else if (progress?.step === "error") {
+            state.lastErrorCode = progress.code || "PC_SCREEN_ERROR";
+            if (state.lastErrorCode === "PHONE_LOCKED") {
+                state.usbConnectionState = "phone_locked";
+            } else if (["ADB_DEVICE_NOT_FOUND", "ADB_UNAUTHORIZED", "USB_REVERSE_FAILED"].includes(state.lastErrorCode)) {
+                state.usbConnectionState = "error";
+            }
+            renderUsbStatus();
+            setStatus(errorStatusLabel(state.lastErrorCode), true);
+            setMessage(progress.message || errorStatusLabel(state.lastErrorCode), "error");
         } else if (progress?.step === "stopped") {
+            renderUsbStatus();
             setMessage(progress.message, "success");
         } else if (progress?.message) {
             setMessage(progress.message, "success");
@@ -142,6 +165,9 @@ async function applyDraft() {
     if (state.applying || !state.online) return;
     state.applying = true;
     state.lastErrorCode = "";
+    state.usbConnectionState = "checking";
+    renderUsbStatus();
+    setPreviewPlaceholder("Đang chuẩn bị kết nối màn hình PC...");
     updateControls();
     try {
         const session = await ipcRenderer.invoke("scft-pc-screen-apply", draftConfig());
@@ -164,6 +190,14 @@ async function applyDraft() {
             return;
         }
         state.lastErrorCode = error.code || "PC_SCREEN_ERROR";
+        setStatus(errorStatusLabel(state.lastErrorCode), true);
+        if (state.lastErrorCode === "PHONE_LOCKED") {
+            state.usbConnectionState = "phone_locked";
+            renderUsbStatus();
+        } else if (["ADB_DEVICE_NOT_FOUND", "ADB_UNAUTHORIZED", "USB_REVERSE_FAILED"].includes(state.lastErrorCode)) {
+            state.usbConnectionState = "error";
+            renderUsbStatus();
+        }
         state.sessionId = "";
         state.activeSession = null;
         setMessage(error.message || "Không thể áp dụng cấu hình.", "error");
@@ -186,8 +220,10 @@ async function stopPhoneViewer() {
         stopPreview();
         elements.preview.removeAttribute("src");
         elements.previewShell.classList.remove("has-frame");
+        setPreviewPlaceholder("Đã dừng chiếu và tắt màn hình ảo VDD.");
         elements.frameStatus.textContent = "Đã dừng";
-        setMessage("Đã dừng chiếu màn hình PC trên điện thoại.", "success");
+        setMessage("Đã dừng chiếu và ngắt màn hình ảo VDD khỏi desktop.", "success");
+        await refreshScreenShare({ keepMessage: true });
     } catch (error) {
         setMessage(error.message || "Không thể dừng phiên chiếu.", "error");
     } finally {
@@ -244,7 +280,14 @@ function syncActiveSession(session) {
     }
     if (session.state === "error") {
         state.lastErrorCode = session.errorCode || "PC_SCREEN_ERROR";
-        setStatus("PC Screen gặp lỗi.", true);
+        if (state.lastErrorCode === "PHONE_LOCKED") {
+            state.usbConnectionState = "phone_locked";
+            renderUsbStatus();
+        } else if (["ADB_DEVICE_NOT_FOUND", "ADB_UNAUTHORIZED", "USB_REVERSE_FAILED"].includes(state.lastErrorCode)) {
+            state.usbConnectionState = "error";
+            renderUsbStatus();
+        }
+        setStatus(errorStatusLabel(state.lastErrorCode), true);
         setMessage(session.errorMessage || "Không thể duy trì phiên màn hình.", "error");
         stopSessionPolling();
     } else {
@@ -264,6 +307,8 @@ async function refreshScreenShare(options = {}) {
         state.backendRetryTimer = null;
     }
     stopPreview();
+    state.usbConnectionState = "checking";
+    setPreviewPlaceholder("Đang kiểm tra màn hình PC...");
     setStatus("Đang kiểm tra màn hình PC...", false);
     if (!options.keepMessage) setMessage("");
     setLinks("", "");
@@ -292,12 +337,14 @@ async function refreshScreenShare(options = {}) {
             );
             if (!options.keepMessage) setMessage("Chọn cấu hình rồi bấm Bắt đầu.", "success");
         }
+        setPreviewPlaceholder("Chọn màn hình và preset rồi bấm Bắt đầu.");
         updateControls();
         requestCaptureWarmup();
         startPreview();
     } catch (error) {
         state.online = false;
         elements.displays.textContent = "-";
+        setPreviewPlaceholder("Dịch vụ chụp màn hình PC chưa sẵn sàng.");
         setStatus("Chiếu màn hình PC đang ngoại tuyến.", false);
         setMessage(error.message, "error");
         updateControls();
@@ -382,8 +429,15 @@ function updatePreviewFrame() {
     };
     elements.preview.onerror = () => {
         elements.frameStatus.textContent = "Không nhận được khung hình";
+        if (!elements.previewShell.classList.contains("has-frame")) {
+            setPreviewPlaceholder("Chưa nhận được khung hình xem trước.");
+        }
     };
     elements.preview.src = `${BACKEND_URL}/api/screen/frame?display=${state.draft.displayIndex}&displayId=${encodeURIComponent(state.draft.displayId)}&scale=0.65&quality=0.65&t=${Date.now()}`;
+}
+
+function setPreviewPlaceholder(text) {
+    if (elements.emptyPreview) elements.emptyPreview.textContent = text;
 }
 
 function updateLinks() {
@@ -399,11 +453,40 @@ function updateLinks() {
 function setLinks(usbUrl, lanUrl) {
     state.usbUrl = usbUrl;
     state.lanUrl = lanUrl;
-    elements.usbUrl.textContent = usbUrl ? "USB + ADB reverse sẵn sàng." : "USB + ADB reverse đang kiểm tra...";
+    renderUsbStatus();
     elements.lanUrl.textContent = lanUrl ? "LAN chỉ dùng cho tương thích, chưa phải luồng H264 chính." : "LAN chưa sẵn sàng.";
     if (elements.copyUsbButton) elements.copyUsbButton.disabled = !usbUrl;
     if (elements.copyLanButton) elements.copyLanButton.disabled = !lanUrl;
     updateControls();
+}
+
+function renderUsbStatus() {
+    if (!elements.usbUrl) return;
+    const labels = {
+        checking: "Đang kiểm tra cáp USB và ADB...",
+        reversing: "Đang mở ADB reverse tcp:7878...",
+        ready: "Cáp USB · ADB · reverse tcp:7878 sẵn sàng.",
+        phone_locked: "USB và ADB sẵn sàng · điện thoại đang khóa.",
+        error: "Cáp USB/ADB reverse chưa sẵn sàng."
+    };
+    elements.usbUrl.textContent = labels[state.usbConnectionState] || labels.checking;
+}
+
+function errorStatusLabel(code) {
+    const labels = {
+        PHONE_LOCKED: "Mở khóa điện thoại rồi bấm Thử lại.",
+        ADB_DEVICE_NOT_FOUND: "Chưa nhận thấy điện thoại qua cáp USB.",
+        ADB_UNAUTHORIZED: "ADB chưa được cấp quyền trên điện thoại.",
+        USB_REVERSE_FAILED: "Không mở được ADB reverse qua USB.",
+        VDD_NOT_READY: "Màn hình ảo chưa sẵn sàng.",
+        VDD_BACKEND_REFRESH_FAILED: "Backend chưa cập nhật được màn hình VDD.",
+        VDD_REBOOT_REQUIRED: "Cần khởi động lại Windows một lần để hoàn tất VDD.",
+        VDD_EXTERNAL_DISPLAY_CONFLICT: "Hãy ngắt màn hình rời trước khi bật VDD.",
+        STARTUP_TIMEOUT: "Không nhận được frame H264 đầu tiên.",
+        STREAM_STALLED: "Luồng H264 bị gián đoạn.",
+        DECODER_ERROR: "Bộ giải mã H264 gặp lỗi."
+    };
+    return labels[code] || "PC Screen gặp lỗi.";
 }
 
 async function copyText(text) {

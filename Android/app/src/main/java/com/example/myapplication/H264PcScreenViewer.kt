@@ -138,10 +138,12 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
     var preset by remember { mutableStateOf(PC_SCREEN_PRESETS.firstOrNull { it.id == initialPresetId } ?: PC_SCREEN_PRESETS[1]) }
     var streamFps by remember { mutableStateOf(preset.initialFps) }
     var controlsVisible by remember { mutableStateOf(!autoStart) }
+    var wantsStreaming by remember { mutableStateOf(autoStart) }
     val screenAspect = remember { phoneScreenAspect() }
     val streamDimensions = preset.dimensions(screenAspect)
 
-    fun stopStream(nextState: PcViewerState = PcViewerState.Stopped) {
+    fun stopStream(nextState: PcViewerState = PcViewerState.Stopped, keepResumeIntent: Boolean = false) {
+        if (!keepResumeIntent) wantsStreaming = false
         playerToken += 1
         player?.stop()
         player = null
@@ -151,13 +153,14 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
     }
 
     fun startStream() {
+        wantsStreaming = true
         val surface = holder?.surface
         if (surface == null || !surface.isValid) {
             viewerState = PcViewerState.WaitingForSurface
             status = "\u0110ang chu\u1ea9n b\u1ecb m\u00e0n h\u00ecnh..."
             return
         }
-        stopStream()
+        stopStream(PcViewerState.Stopped, keepResumeIntent = true)
         val token = playerToken + 1
         playerToken = token
         viewerState = PcViewerState.Connecting
@@ -213,12 +216,12 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
     }
 
     LaunchedEffect(holder, autoStart) {
-        if (autoStart && holder?.surface?.isValid == true && viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
+        if (wantsStreaming && holder?.surface?.isValid == true && viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
             // The activity requests landscape above; wait for the final SurfaceView
             // instance after rotation before binding MediaCodec to it.
             val stableHolder = holder
             delay(350)
-            if (stableHolder == holder && stableHolder?.surface?.isValid == true && viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
+            if (stableHolder == holder && wantsStreaming && stableHolder?.surface?.isValid == true && viewerState != PcViewerState.Streaming && viewerState != PcViewerState.Connecting) {
                 startStream()
             }
         }
@@ -265,7 +268,10 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
                                 player?.stop()
                                 player = null
                             } else {
-                                stopStream(PcViewerState.WaitingForSurface)
+                                val resumeAfterSurface = viewerState == PcViewerState.Streaming
+                                    || viewerState == PcViewerState.Connecting
+                                    || viewerState == PcViewerState.Recovering
+                                stopStream(PcViewerState.WaitingForSurface, keepResumeIntent = resumeAfterSurface)
                             }
                         }
                     })
@@ -523,7 +529,11 @@ private class LowLatencyH264Player(
             Log.e(PC_SCREEN_LOG_TAG, "H264 stream failed session=$sessionId generation=$generation attempt=$attempt preset=${preset.id} display=$displayIndex", error)
             sendTelemetry(
                 "error", 0, 0, 0, 0, 0,
-                if (error is SocketTimeoutException) "STREAM_STALLED" else "DECODER_ERROR"
+                when {
+                    error is SocketTimeoutException -> "STREAM_STALLED"
+                    error.message?.contains("Stream HTTP 503") == true -> "STARTUP_TIMEOUT"
+                    else -> "DECODER_ERROR"
+                }
             )
             if (running.get()) post { onError(error.message ?: "L\u1ed7i kh\u00f4ng x\u00e1c \u0111\u1ecbnh") }
         } finally {

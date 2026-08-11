@@ -155,9 +155,11 @@ if (-not $SkipInstall) {
             throw "Sau khi cài, Windows nhận $($installedDevices.Count) VDD node; yêu cầu đúng 1 node."
         }
         Write-Host "VDD device installed successfully: $($installedDevices[0].Status)"
+        Write-Host "Disconnecting the VDD display topology until SCFT starts PC Screen..."
+        & (Join-Path $env:SystemRoot "System32\DisplaySwitch.exe") /internal
     } finally {
         Remove-Item -LiteralPath $workPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-Write-Host "VDD repair complete. Reboot Windows before starting PC Screen."
+Write-Host "VDD repair complete. Reboot Windows once; SCFT will attach VDD only while PC Screen is active."
