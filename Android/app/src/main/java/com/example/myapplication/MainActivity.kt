@@ -73,6 +73,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.net.HttpURLConnection
@@ -169,6 +172,50 @@ private fun MobileHomeScreen(
     var connection by remember { mutableStateOf<AndroidConnectionStatus?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingHomeDownload by remember { mutableStateOf<RemoteFile?>(null) }
+
+    val homeDownloadPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { destinationUri ->
+        val file = pendingHomeDownload
+        pendingHomeDownload = null
+        if (destinationUri != null && file != null) {
+            scope.launch {
+                val result = downloadRemoteFile(context, file, destinationUri)
+                if (result.success) {
+                    saveLocalUri(context, file.id, destinationUri)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(pendingHomeDownload) {
+        pendingHomeDownload?.let { file ->
+            homeDownloadPicker.launch(file.originalName)
+        }
+    }
+
+    // Keep receiving PC files even when the user is on Home instead of FT.
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                val latestFiles = fetchRemoteFiles()
+                val incomingFile = latestFiles.firstOrNull { file ->
+                    savedUriFor(context, file.id) == null &&
+                        !wasPromptedFor(context, file.id)
+                }
+                if (incomingFile != null && pendingHomeDownload == null) {
+                    markPrompted(context, incomingFile.id)
+                    pendingHomeDownload = incomingFile
+                }
+            } catch (exception: Exception) {
+                // The USB tunnel may be temporarily unavailable.
+            }
+            delay(2500)
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -427,7 +474,6 @@ fun UsbFileTransferScreen(
     var remoteFilesError by remember {
         mutableStateOf<String?>(null)
     }
-    var knownRemoteFileIds by remember { mutableStateOf<Set<String>?>(null) }
     var pendingDownloadFile by remember {
         mutableStateOf<RemoteFile?>(null)
     }
@@ -443,14 +489,11 @@ fun UsbFileTransferScreen(
         }
         try {
             val latestFiles = fetchRemoteFiles()
-            val previousIds = knownRemoteFileIds
             remoteFiles = latestFiles
-            knownRemoteFileIds = latestFiles.map { it.id }.toSet()
 
-            if (previousIds != null && pendingDownloadFile == null) {
+            if (pendingDownloadFile == null) {
                 val newPcFile = latestFiles.firstOrNull { file ->
-                    file.id !in previousIds &&
-                        !file.senderDeviceId.startsWith("android-") &&
+                    isPcReceivedFile(file) &&
                         savedUriFor(context, file.id) == null &&
                         !wasPromptedFor(context, file.id)
                 }
@@ -1131,8 +1174,7 @@ private suspend fun fetchRemoteFiles(): List<RemoteFile> =
                 for (index in 0 until jsonFiles.length()) {
                     val item = jsonFiles.getJSONObject(index)
 
-                    add(
-                        RemoteFile(
+                    val file = RemoteFile(
                             id = item.getString("id"),
                             originalName = item.getString("originalName"),
                             size = item.optLong("size", 0L),
@@ -1140,13 +1182,16 @@ private suspend fun fetchRemoteFiles(): List<RemoteFile> =
                             uploadedAt = item.optString("uploadedAt"),
                             downloadUrl = item.getString("downloadUrl")
                         )
-                    )
+                    if (isPcReceivedFile(file)) add(file)
                 }
             }
         } finally {
             connection.disconnect()
         }
     }
+
+private fun isPcReceivedFile(file: RemoteFile): Boolean =
+    !file.senderDeviceId.startsWith("android-")
 
 private suspend fun fetchPcDeviceInfo(): PcDeviceInfo =
     withContext(Dispatchers.IO) {
@@ -1212,7 +1257,13 @@ private suspend fun fetchAndroidConnectionStatus(): AndroidConnectionStatus =
 
 private fun formatConnectionTime(value: String?): String {
     if (value.isNullOrBlank()) return "-"
-    return value.substringAfter('T').substringBefore('Z').take(8)
+    return try {
+        DateTimeFormatter.ofPattern("HH:mm:ss")
+            .withZone(ZoneId.systemDefault())
+            .format(Instant.parse(value))
+    } catch (exception: Exception) {
+        value.substringAfter('T').substringBefore('Z').take(8)
+    }
 }
 
 private suspend fun downloadRemoteFile(

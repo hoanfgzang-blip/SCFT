@@ -13,7 +13,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const clearBtn = document.getElementById("clear_file_btn");
     const refreshBtn = document.getElementById("refresh_files_btn");
     const receivedRefreshBtn = document.getElementById("refresh_received_files_btn");
-    const backendBtn = document.getElementById("open_backend_btn");
 
     fileInput.addEventListener("change", event => {
         setSelectedFile(event.target.files[0] || null);
@@ -38,8 +37,6 @@ document.addEventListener("DOMContentLoaded", () => {
     clearBtn.addEventListener("click", clearSelectedFile);
     refreshBtn.addEventListener("click", loadFiles);
     receivedRefreshBtn.addEventListener("click", loadFiles);
-    backendBtn.addEventListener("click", () => window.open(`${BACKEND_URL}/api/health`, "_blank"));
-
     initFileTransfer();
 });
 
@@ -100,7 +97,10 @@ async function loadFiles() {
         }
 
         const data = await response.json();
-        const files = data.files || [];
+        // The PC history contains only files received from Android.
+        const files = (data.files || []).filter(file =>
+            String(file.senderDeviceId || "").startsWith("android-")
+        );
         fileCountText.textContent = `${files.length} ${files.length === 1 ? "file" : "files"}`;
 
         if (files.length === 0) {
