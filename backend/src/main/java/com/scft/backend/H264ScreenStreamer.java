@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 final class H264ScreenStreamer implements AutoCloseable {
     private static final Path VIRTUAL_DISPLAY_FRAME_PATH = Path.of(System.getenv().getOrDefault("ProgramData", "C:\\ProgramData"), "SCFT", "virtual-display-frame.bmp");
     private static volatile String detectedEncoder;
+    private static volatile Boolean detectedDdagrab;
     private final int display;
     private final String displayId;
     private final int fps;
@@ -40,13 +41,12 @@ final class H264ScreenStreamer implements AutoCloseable {
         Rectangle bounds = screenBounds(display, displayId);
         String encoder = resolveH264Encoder();
         String executable = resolveFfmpegExecutable();
-        List<String> command = new ArrayList<>(List.of(
-                executable, "-hide_banner", "-loglevel", "error",
-                "-f", "gdigrab", "-draw_mouse", "0", "-framerate", "1",
-                "-offset_x", Integer.toString(bounds.x), "-offset_y", Integer.toString(bounds.y),
-                "-video_size", bounds.width + "x" + bounds.height, "-i", "desktop",
-                "-an", "-c:v", encoder
-        ));
+        List<String> command = new ArrayList<>(List.of(executable, "-hide_banner", "-loglevel", "error"));
+        command.addAll(captureInput(display, bounds, 1, false, useDxgiCapture()));
+        if (useDxgiCapture()) {
+            command.addAll(List.of("-vf", dxgiEncoderInputFilter(encoder)));
+        }
+        command.addAll(List.of("-an", "-c:v", encoder));
         if ("h264_nvenc".equalsIgnoreCase(encoder)) {
             command.addAll(List.of("-preset", "p1", "-tune", "ull", "-rc-lookahead", "0", "-delay", "0", "-zerolatency", "1", "-bf", "0", "-b:v", "1M"));
         } else if ("h264_mf".equalsIgnoreCase(encoder)) {
@@ -102,7 +102,18 @@ final class H264ScreenStreamer implements AutoCloseable {
         Rectangle bounds = screenBounds(display, displayId);
         captureSetupMs = (System.nanoTime() - captureStartedAt) / 1_000_000L;
         long encodeStartedAt = System.nanoTime();
-        process = startDesktopEncoder(bounds);
+        boolean dxgi = useDxgiCapture();
+        process = startDesktopEncoder(bounds, dxgi);
+        if (dxgi) {
+            try {
+                Thread.sleep(150L);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+            if (!process.isAlive()) {
+                process = startDesktopEncoder(bounds, false);
+            }
+        }
         encodeSetupMs = (System.nanoTime() - encodeStartedAt) / 1_000_000L;
     }
 
@@ -114,11 +125,51 @@ final class H264ScreenStreamer implements AutoCloseable {
         return encodeSetupMs;
     }
 
-    private Process startDesktopEncoder(Rectangle bounds) throws IOException {
+    private Process startDesktopEncoder(Rectangle bounds, boolean dxgi) throws IOException {
         List<String> command = encoderBase();
-        command.addAll(List.of("-fflags", "nobuffer", "-f", "gdigrab", "-draw_mouse", "1", "-framerate", Integer.toString(fps), "-offset_x", Integer.toString(bounds.x), "-offset_y", Integer.toString(bounds.y), "-video_size", bounds.width + "x" + bounds.height, "-i", "desktop"));
-        appendEncoderOutput(command);
+        command.add("-fflags");
+        command.add("nobuffer");
+        command.addAll(captureInput(display, bounds, fps, true, dxgi));
+        appendEncoderOutput(command, dxgi);
         return start(command);
+    }
+
+    private static List<String> captureInput(int display, Rectangle bounds, int fps, boolean drawMouse, boolean dxgi) {
+        if (dxgi) {
+            String input = "ddagrab=output_idx=" + Math.max(0, display)
+                    + ":framerate=" + Math.max(1, fps)
+                    + ":draw_mouse=" + (drawMouse ? "1" : "0");
+            return List.of("-f", "lavfi", "-i", input);
+        }
+        return List.of("-f", "gdigrab", "-draw_mouse", drawMouse ? "1" : "0",
+                "-framerate", Integer.toString(Math.max(1, fps)),
+                "-offset_x", Integer.toString(bounds.x), "-offset_y", Integer.toString(bounds.y),
+                "-video_size", bounds.width + "x" + bounds.height, "-i", "desktop");
+    }
+
+    private static boolean useDxgiCapture() {
+        String configured = System.getenv("SCFT_CAPTURE_SOURCE");
+        if ("gdi".equalsIgnoreCase(configured) || "gdigrab".equalsIgnoreCase(configured)) return false;
+        return "dxgi".equalsIgnoreCase(configured) || supportsDdagrab();
+    }
+
+    private static boolean supportsDdagrab() {
+        Boolean cached = detectedDdagrab;
+        if (cached != null) return cached;
+        synchronized (H264ScreenStreamer.class) {
+            if (detectedDdagrab != null) return detectedDdagrab;
+            try {
+                Process probe = new ProcessBuilder(resolveFfmpegExecutable(), "-hide_banner", "-filters")
+                        .redirectErrorStream(true)
+                        .start();
+                String listing = new String(probe.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                boolean completed = probe.waitFor(2, TimeUnit.SECONDS);
+                detectedDdagrab = completed && probe.exitValue() == 0 && listing.contains("ddagrab");
+            } catch (Exception ignored) {
+                detectedDdagrab = false;
+            }
+            return detectedDdagrab;
+        }
     }
 
     private void streamFramePipe(OutputStream response) throws IOException {
@@ -140,7 +191,7 @@ final class H264ScreenStreamer implements AutoCloseable {
     private Process startFramePipeEncoder(int width, int height, String pixelFormat) throws IOException {
         List<String> command = encoderBase();
         command.addAll(List.of("-fflags", "nobuffer", "-f", "rawvideo", "-pixel_format", pixelFormat, "-video_size", width + "x" + height, "-framerate", Integer.toString(fps), "-i", "pipe:0"));
-        appendEncoderOutput(command);
+        appendEncoderOutput(command, false);
         return start(command);
     }
 
@@ -169,9 +220,12 @@ final class H264ScreenStreamer implements AutoCloseable {
         return configured == null || configured.isBlank() ? "ffmpeg" : configured;
     }
 
-    private void appendEncoderOutput(List<String> command) {
+    private void appendEncoderOutput(List<String> command, boolean dxgi) {
         String encoder = resolveH264Encoder();
         List<String> filters = new ArrayList<>();
+        if (dxgi) {
+            filters.addAll(List.of(dxgiEncoderInputFilterParts(encoder)));
+        }
         // The 16:10 2K profile already matches the virtual display size on the
         // supported VDD path. Avoid an unnecessary CPU scale in that case.
         if (targetWidth > 0 && targetHeight > 0
@@ -179,7 +233,7 @@ final class H264ScreenStreamer implements AutoCloseable {
             if ("h264_nvenc".equalsIgnoreCase(encoder)) {
                 // Keep resize on the GPU. gdigrab/raw-frame input is uploaded
                 // once, then scale_cuda feeds NVENC without a CPU round-trip.
-                filters.add("hwupload_cuda");
+                if (!dxgi) filters.add("hwupload_cuda");
                 filters.add("scale_cuda=" + targetWidth + ":" + targetHeight);
             } else {
                 filters.add("scale=" + targetWidth + ":" + targetHeight + ":flags=fast_bilinear");
@@ -205,6 +259,20 @@ final class H264ScreenStreamer implements AutoCloseable {
         } else {
             command.addAll(List.of("-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", "-mpegts_flags", "+resend_headers", "pipe:1"));
         }
+    }
+
+    private static String dxgiEncoderInputFilter(String encoder) {
+        return String.join(",", dxgiEncoderInputFilterParts(encoder));
+    }
+
+    private static String[] dxgiEncoderInputFilterParts(String encoder) {
+        if ("h264_nvenc".equalsIgnoreCase(encoder)) {
+            return new String[]{"hwdownload", "format=bgra", "hwupload_cuda"};
+        }
+        if ("h264_mf".equalsIgnoreCase(encoder)) {
+            return new String[]{"hwdownload", "format=bgra"};
+        }
+        return new String[]{"hwdownload", "format=bgra"};
     }
 
     private static String resolveH264Encoder() {

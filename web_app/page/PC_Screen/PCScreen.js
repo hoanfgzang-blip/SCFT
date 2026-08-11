@@ -322,11 +322,13 @@ async function refreshScreenShare(options = {}) {
         const device = await readJsonResponse(deviceResponse);
         if (!status.available) throw new Error(status.error || "Chưa thể chụp màn hình PC.");
 
+        const secondaryScreens = (Array.isArray(status.screens) ? status.screens : [])
+            .filter(screen => Number(screen?.index) > 0);
         populateDisplays(Array.isArray(status.screens) ? status.screens : []);
         const usbUrl = `${BACKEND_URL}${status.viewUrl}`;
         const lanUrl = `http://${device.ip || "127.0.0.1"}:${device.port || 7878}${status.viewUrl}?display=${state.draft.displayIndex}&displayId=${encodeURIComponent(state.draft.displayId)}`;
         setLinks(usbUrl, lanUrl);
-        elements.displays.textContent = String(status.displays || 1);
+        elements.displays.textContent = String(secondaryScreens.length);
         state.backendRetryCount = 0;
         state.online = true;
         syncActiveSession(status.session);
@@ -353,6 +355,7 @@ async function refreshScreenShare(options = {}) {
 }
 
 function requestCaptureWarmup() {
+    if (Number(state.draft.displayIndex) <= 0 || !state.draft.displayId) return;
     if (state.warmupRequested) return;
     state.warmupRequested = true;
     const query = `display=${state.draft.displayIndex}&displayId=${encodeURIComponent(state.draft.displayId)}`;
@@ -382,28 +385,29 @@ function scheduleBackendRetry() {
 }
 
 function populateDisplays(screens) {
+    const secondaryScreens = screens.filter(screen => Number(screen?.index) > 0);
     const selected = state.draft.displayIndex;
     elements.displaySelect.innerHTML = "";
-    screens.forEach(screen => {
+    secondaryScreens.forEach(screen => {
         const option = document.createElement("option");
         option.value = String(screen.index);
         option.dataset.displayId = screen.id || "";
         option.textContent = `Màn hình ${screen.index + 1} (${screen.width} x ${screen.height})`;
         elements.displaySelect.appendChild(option);
     });
-    if (screens.length === 0) {
+    if (secondaryScreens.length === 0) {
         const option = document.createElement("option");
-        option.value = "0";
-        option.textContent = "Không có màn hình";
+        option.value = "-1";
+        option.textContent = "Chưa có màn hình phụ VDD";
         elements.displaySelect.appendChild(option);
-        state.draft.displayIndex = 0;
+        state.draft.displayIndex = -1;
         state.draft.displayId = "";
         elements.displaySelect.disabled = true;
         return;
     }
-    const available = screens.some(screen => screen.index === selected);
-    state.draft.displayIndex = available ? selected : screens[0].index;
-    const selectedScreen = screens.find(screen => screen.index === state.draft.displayIndex) || screens[0];
+    const available = secondaryScreens.some(screen => screen.index === selected);
+    state.draft.displayIndex = available ? selected : secondaryScreens[0].index;
+    const selectedScreen = secondaryScreens.find(screen => screen.index === state.draft.displayIndex) || secondaryScreens[0];
     state.draft.displayId = selectedScreen?.id || "";
     elements.displaySelect.value = String(state.draft.displayIndex);
     elements.presetSelect.value = state.draft.presetId;
@@ -422,6 +426,11 @@ function stopPreview() {
 }
 
 function updatePreviewFrame() {
+    if (Number(state.draft.displayIndex) <= 0 || !state.draft.displayId) {
+        if (elements.preview) elements.preview.removeAttribute("src");
+        if (elements.frameStatus) elements.frameStatus.textContent = "Chưa có màn hình phụ VDD";
+        return;
+    }
     const startedAt = Date.now();
     elements.preview.onload = () => {
         elements.previewShell.classList.add("has-frame");

@@ -9,13 +9,17 @@ import java.awt.RenderingHints;
 import java.awt.Robot;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -53,6 +57,7 @@ public final class ScftBackendServer {
     private static final long SCREEN_START_TIMEOUT_MS = 12_000L;
     private static final long SCREEN_HEARTBEAT_TIMEOUT_MS = 5_000L;
     private static final int DEFAULT_PORT = 7878;
+    private static final int RAW_STREAM_PORT_OFFSET = 1;
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final long MAX_UPLOAD_BYTES = 2L * 1024L * 1024L * 1024L;
     private static final long SCREEN_FRAME_INTERVAL_MS = 33L;
@@ -61,6 +66,7 @@ public final class ScftBackendServer {
     private static final Map<Integer, Robot> SCREEN_ROBOTS = new HashMap<>();
 
     private final int port;
+    private final int rawStreamPort;
     private final Path uploadDir;
     private final Path metadataDir;
     private final String deviceId;
@@ -74,12 +80,15 @@ public final class ScftBackendServer {
     private volatile long androidLastSeenMs;
     private final Map<String, ScreenFrame> screenFrames = new ConcurrentHashMap<>();
     private final ExecutorService screenCaptureExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService rawStreamExecutor = Executors.newCachedThreadPool();
     private final AtomicLong screenGeneration = new AtomicLong();
     private volatile H264ScreenStreamer activeScreenStreamer;
     private volatile ScreenSession screenSession;
+    private volatile ServerSocket rawStreamServer;
 
     private ScftBackendServer(int port, Path storageRoot) throws IOException {
         this.port = port;
+        this.rawStreamPort = port + RAW_STREAM_PORT_OFFSET;
         this.uploadDir = Paths
         .get(System.getProperty("user.home"), "Downloads")
         .toAbsolutePath()
@@ -124,11 +133,93 @@ public final class ScftBackendServer {
         server.createContext("/api/screen", withCors(this::handleScreen));
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
+        startRawStreamServer();
 
         Server.startInThread(10789);
 
         System.out.println("SCFT backend running at http://localhost:" + port);
         System.out.println("Uploads stored in " + uploadDir);
+    }
+
+    private void startRawStreamServer() throws IOException {
+        ServerSocket listener = new ServerSocket();
+        listener.setReuseAddress(true);
+        listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), rawStreamPort));
+        rawStreamServer = listener;
+        Thread acceptor = new Thread(() -> {
+            while (!listener.isClosed()) {
+                try {
+                    Socket client = listener.accept();
+                    rawStreamExecutor.submit(() -> handleRawH264Client(client));
+                } catch (IOException error) {
+                    if (!listener.isClosed()) error.printStackTrace();
+                }
+            }
+        }, "scft-h264-raw-acceptor");
+        acceptor.setDaemon(true);
+        acceptor.start();
+        System.out.println("SCFT raw H264 stream at 127.0.0.1:" + rawStreamPort);
+    }
+
+    private void handleRawH264Client(Socket client) {
+        H264ScreenStreamer streamer = null;
+        try (Socket socket = client) {
+            socket.setTcpNoDelay(true);
+            socket.setSoTimeout(5_000);
+            BufferedReader control = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            String requestLine = control.readLine();
+            if (requestLine == null || !requestLine.startsWith("SCFT-H264 ")) {
+                writeRawResponse(socket, 400, "Invalid SCFT H264 request");
+                return;
+            }
+
+            URI requestUri = URI.create(requestLine.substring("SCFT-H264 ".length()).trim());
+            Map<String, String> params = queryParams(requestUri);
+            ScreenSession currentSession = screenSession;
+            String sessionId = params.getOrDefault("sessionId", "");
+            long generation = clampLong(params.get("generation"), 0L, Long.MAX_VALUE, 0L);
+            if (currentSession == null || sessionId.isBlank() || generation <= 0L
+                    || !currentSession.sessionId.equals(sessionId)
+                    || currentSession.generation != generation) {
+                writeRawResponse(socket, 409, "Screen session is stale");
+                return;
+            }
+
+            ScreenProfile profile = new ScreenProfile(currentSession.width, currentSession.height,
+                    currentSession.targetFps, currentSession.bitrate);
+            streamer = new H264ScreenStreamer(currentSession.displayIndex, currentSession.displayId,
+                    profile.fps, "h264", profile.bitrate, profile.width, profile.height);
+            H264ScreenStreamer previous = activeScreenStreamer;
+            activeScreenStreamer = streamer;
+            if (previous != null) previous.close();
+            currentSession.markConnecting();
+            streamer.prepare();
+
+            socket.setSoTimeout(0);
+            OutputStream output = socket.getOutputStream();
+            String headers = "SCFT/1 200 OK\r\n"
+                    + "Content-Type: video/h264\r\n"
+                    + "X-SCFT-Capture-Setup-Ms: " + streamer.captureSetupMs() + "\r\n"
+                    + "X-SCFT-Encode-Setup-Ms: " + streamer.encodeSetupMs() + "\r\n"
+                    + "\r\n";
+            output.write(headers.getBytes(StandardCharsets.US_ASCII));
+            output.flush();
+            streamer.stream(output);
+        } catch (Exception error) {
+            if (!(error instanceof java.net.SocketException)) error.printStackTrace();
+        } finally {
+            if (streamer != null) {
+                streamer.close();
+                if (activeScreenStreamer == streamer) activeScreenStreamer = null;
+            }
+        }
+    }
+
+    private static void writeRawResponse(Socket socket, int status, String message) throws IOException {
+        String response = "SCFT/1 " + status + " " + message + "\r\nContent-Length: 0\r\n\r\n";
+        OutputStream output = socket.getOutputStream();
+        output.write(response.getBytes(StandardCharsets.US_ASCII));
+        output.flush();
     }
 
     private HttpHandler withCors(ExchangeHandler handler) {
@@ -291,10 +382,14 @@ public final class ScftBackendServer {
         String requestedPreset = normalizePreset(params.getOrDefault("requestedPreset", preset));
         String transport = params.getOrDefault("transport", "usb");
         int attempt = clampInt(params.get("attempt"), 1, 3, 1);
+        if (!isSecondaryDisplay(display, displayId)) {
+            sendJson(exchange, 409, "{\"errorCode\":\"VDD_NOT_READY\",\"error\":\"Kh\\u00f4ng t\\u00ecm th\\u1ea5y m\\u00e0n h\\u00ecnh ph\\u1ee5 VDD. SCFT kh\\u00f4ng chi\\u1ebfu l\\u00ean m\\u00e0n h\\u00ecnh ch\\u00ednh.\"}");
+            return;
+        }
         ScreenProfile profile = screenProfile(preset, "16:10");
         ScreenSession next = new ScreenSession(
                 UUID.randomUUID().toString(), screenGeneration.incrementAndGet(), display, displayId, requestedPreset, preset, transport,
-                profile.width, profile.height, profile.fps, profile.bitrate
+                profile.width, profile.height, profile.fps, profile.bitrate, rawStreamPort
         );
         next.attempt = attempt;
         H264ScreenStreamer previous = activeScreenStreamer;
@@ -500,6 +595,7 @@ public final class ScftBackendServer {
                 + "\"viewUrl\":\"/api/screen/view\","
                 + "\"frameUrl\":\"/api/screen/frame\","
                 + "\"streamUrl\":\"/api/screen/stream\","
+                + "\"rawStreamPort\":" + rawStreamPort + ","
                 + "\"presets\":[{\"id\":\"zero_latency\",\"label\":\"Kh\u00f4ng \u0111\u1ed9 tr\u1ec5\"},{\"id\":\"balanced\",\"label\":\"C\u00e2n b\u1eb1ng\"},{\"id\":\"adaptive_2k\",\"label\":\"2K\"}],"
                 + "\"session\":" + screenSessionJson() + ","
                 + "\"error\":\"" + json(error) + "\""
@@ -515,6 +611,10 @@ public final class ScftBackendServer {
         Map<String, String> params = queryParams(exchange.getRequestURI());
         int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
         String displayId = params.getOrDefault("displayId", "");
+        if (!isSecondaryDisplay(display, displayId)) {
+            sendJson(exchange, 409, "{\"errorCode\":\"VDD_NOT_READY\",\"error\":\"Ch\\u01b0a c\\u00f3 m\\u00e0n h\\u00ecnh ph\\u1ee5 VDD.\"}");
+            return;
+        }
         try {
             long startedAt = System.currentTimeMillis();
             H264ScreenStreamer.warmUpCaptureEncoder(display, displayId);
@@ -534,6 +634,11 @@ public final class ScftBackendServer {
         double scale = clampDouble(params.get("scale"), 0.25, 1.0, 0.65);
         float quality = (float) clampDouble(params.get("quality"), 0.25, 0.95, 0.7);
         int display = clampInt(params.get("display"), 0, Integer.MAX_VALUE, 0);
+        String displayId = params.getOrDefault("displayId", "");
+        if (!isSecondaryDisplay(display, displayId)) {
+            sendJson(exchange, 409, "{\"errorCode\":\"VDD_NOT_READY\",\"error\":\"Ch\\u01b0a c\\u00f3 m\\u00e0n h\\u00ecnh ph\\u1ee5 VDD.\"}");
+            return;
+        }
         ScreenFrame frame = currentScreenFrame(scale, quality, display);
         byte[] image = frame.image;
 
@@ -882,6 +987,18 @@ public final class ScftBackendServer {
         int index = Math.min(Math.max(display, 0), devices.length - 1);
         return devices[index].getDefaultConfiguration().getBounds();
     }
+
+    private static boolean isSecondaryDisplay(int display, String displayId) {
+        if (display <= 0 && (displayId == null || displayId.isBlank())) return false;
+        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
+        for (int index = 0; index < devices.length; index++) {
+            if (displayId != null && !displayId.isBlank()
+                    && displayId.equalsIgnoreCase(devices[index].getIDstring())) {
+                return index > 0;
+            }
+        }
+        return display > 0 && display < devices.length;
+    }
     private static BufferedImage scaleImage(BufferedImage source, double scale) {
         if (scale >= 0.99) {
             return source;
@@ -1164,6 +1281,7 @@ public final class ScftBackendServer {
         private final String requestedPreset;
         private volatile String effectivePreset;
         private final String transport;
+        private final int rawStreamPort;
         private final int width;
         private final int height;
         private final int targetFps;
@@ -1189,7 +1307,7 @@ public final class ScftBackendServer {
 
         private ScreenSession(String sessionId, long generation, int displayIndex, String displayId, String requestedPreset,
                 String effectivePreset,
-                String transport, int width, int height, int targetFps, String bitrate) {
+                String transport, int width, int height, int targetFps, String bitrate, int rawStreamPort) {
             this.sessionId = sessionId;
             this.generation = generation;
             this.displayIndex = displayIndex;
@@ -1197,6 +1315,7 @@ public final class ScftBackendServer {
             this.requestedPreset = requestedPreset;
             this.effectivePreset = effectivePreset;
             this.transport = transport;
+            this.rawStreamPort = rawStreamPort;
             this.width = width;
             this.height = height;
             this.targetFps = targetFps;
@@ -1264,6 +1383,7 @@ public final class ScftBackendServer {
                     + "\"createdAt\":" + createdAt + ","
                     + "\"updatedAt\":" + updatedAt + ","
                     + "\"transport\":\"" + json(transport) + "\","
+                    + "\"rawStreamPort\":" + rawStreamPort + ","
                     + "\"config\":{"
                     + "\"displayIndex\":" + displayIndex + ","
                     + "\"displayId\":\"" + json(displayId) + "\","

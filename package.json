@@ -56,6 +56,11 @@
         "from": "build-resources/ffmpeg",
         "to": "ffmpeg",
         "filter": ["**/*"]
+      },
+      {
+        "from": "resources/scrcpy",
+        "to": "scrcpy",
+        "filter": ["**/*"]
       }
     ],
     "win": {

@@ -14,7 +14,12 @@ const RESOLUTION_MAP = {
 const state = {
     adbPath: null,
     adbProcess: null,
+    scrcpyCapture: null,
     decoder: null,
+    captureMode: null,
+    pngCaptureStop: null,
+    h264ProbeTimer: null,
+    h264Received: false,
     running: false,
     controller: null
 };
@@ -321,15 +326,93 @@ async function startStream() {
 
     let orientationSet = false;
 
-    state.decoder = new H264StreamDecoder(canvas, (stats) => {
+    state.running = true;
+    const createDecoder = () => new H264StreamDecoder(canvas, (stats) => {
         container.classList.add("has-frame");
         statsEl.textContent = `${stats.frameCount} frames | ${stats.fps} FPS (${stats.width}×${stats.height})`;
-
-        if (!orientationSet && stats.width > 0 && stats.height > 0) {
-            orientationSet = true;
-        }
+        if (!orientationSet && stats.width > 0 && stats.height > 0) orientationSet = true;
     });
+    const feedH264 = (chunk) => {
+        if (!state.running || !state.decoder) return;
+        if (chunk.length > 0) {
+            state.h264Received = true;
+            if (state.h264ProbeTimer) {
+                clearTimeout(state.h264ProbeTimer);
+                state.h264ProbeTimer = null;
+            }
+        }
+        state.decoder.feedChunk(chunk);
+    };
 
+    const scrcpyServerPath = SCFTScreenCaptureCompat.resolveScrcpyServerPath();
+    if (scrcpyServerPath) {
+        try {
+            state.decoder = createDecoder();
+            state.captureMode = "scrcpy-h264";
+            state.h264Received = false;
+            const maxSize = Math.max(...String(settings.resolution).split("x").map(Number).filter(Number.isFinite));
+            state.scrcpyCapture = await SCFTScreenCaptureCompat.startScrcpyH264Capture({
+                adbPath: adbCommand,
+                serverPath: scrcpyServerPath,
+                maxSize,
+                maxFps: settings.fps,
+                bitrate: settings.bitrate,
+                onData: feedH264,
+                onError: error => console.warn("SCFT popout scrcpy-server:", error.message),
+                onClose: () => {
+                    if (state.running && state.captureMode === "scrcpy-h264") stopStream();
+                }
+            });
+            statsEl.textContent = "H.264 via scrcpy-server";
+            state.h264ProbeTimer = setTimeout(() => {
+                if (state.running && state.captureMode === "scrcpy-h264" && !state.h264Received) {
+                    switchToPngPopout(adbCommand, settings, canvas, container, statsEl);
+                }
+            }, 4000);
+            startRotationPolling();
+            if (!state.controller && canvas) {
+                state.controller = new SCController(canvas, (cmdStr) => sendSocketCommand(cmdStr));
+            } else if (state.controller) {
+                state.controller.setEnabled(true);
+            }
+            startAudioShareSafely();
+            return;
+        } catch (error) {
+            console.warn("[Popout] scrcpy-server unavailable; trying legacy capture:", error.message);
+            state.scrcpyCapture = null;
+            if (state.decoder) {
+                state.decoder.destroy();
+                state.decoder = null;
+            }
+            state.captureMode = null;
+        }
+    }
+
+    let rawH264Available = false;
+    try {
+        rawH264Available = (await SCFTScreenCaptureCompat.detectRawH264(adbCommand)).h264;
+    } catch (_) {
+        rawH264Available = false;
+    }
+
+    if (!rawH264Available) {
+        state.captureMode = "png";
+        statsEl.textContent = "PNG fallback (H.264 stdout unavailable)";
+        if (!state.controller && canvas) {
+            state.controller = new SCController(canvas, (cmdStr) => sendSocketCommand(cmdStr));
+        } else if (state.controller) {
+            state.controller.setEnabled(true);
+        }
+        startPngPopout(adbCommand, settings, canvas, container, statsEl);
+        startRotationPolling();
+        startAudioShareSafely();
+        return;
+    }
+
+    state.decoder = createDecoder();
+
+    state.captureMode = "h264";
+    state.h264Received = false;
     startRotationPolling();
 
     if (!state.controller && canvas) {
@@ -347,15 +430,10 @@ async function startStream() {
         "-"
     ];
 
-    state.running = true;
-
     try {
         state.adbProcess = spawn(adbCommand, spawnArgs, { windowsHide: true });
 
-        state.adbProcess.stdout.on("data", (chunk) => {
-            if (!state.running || !state.decoder) return;
-            state.decoder.feedChunk(chunk);
-        });
+        state.adbProcess.stdout.on("data", feedH264);
 
         state.adbProcess.stderr.on("data", (data) => {
             console.warn("Popout ADB stderr:", data.toString());
@@ -373,23 +451,86 @@ async function startStream() {
             }
         });
 
-        try {
-            getAudioManager()?.startAudioShare(runAdb).catch((err) => {
-                console.warn("[Popout] Audio share background error:", err);
-            });
-        } catch (audioErr) {
-            console.warn("[Popout] Audio share sync error:", audioErr);
-        }
+        state.h264ProbeTimer = setTimeout(() => {
+            if (state.running && state.captureMode === "h264" && !state.h264Received) {
+                console.warn("[Popout] H.264 screenrecord produced no bytes; switching to PNG fallback.");
+                switchToPngPopout(adbCommand, settings, canvas, container, statsEl);
+            }
+        }, 4000);
+        startAudioShareSafely();
     } catch (err) {
         statsEl.textContent = "Failed to start: " + err.message;
     }
 }
 
+function startAudioShareSafely() {
+    try {
+        getAudioManager()?.startAudioShare(runAdb).catch((err) => {
+            console.warn("[Popout] Audio share background error:", err);
+        });
+    } catch (audioErr) {
+        console.warn("[Popout] Audio share sync error:", audioErr);
+    }
+}
+
+function startPngPopout(adbCommand, settings, canvas, container, statsEl) {
+    state.pngCaptureStop = SCFTScreenCaptureCompat.startPngCapture({
+        adbPath: adbCommand,
+        canvas,
+        fps: settings.fps,
+        isActive: () => state.running && state.captureMode === "png",
+        onFrame: (stats) => {
+            container.classList.add("has-frame");
+            statsEl.textContent = `${stats.frameCount} frames | ${stats.fps} FPS PNG (${stats.width}×${stats.height})`;
+        },
+        onError: (error) => {
+            if (state.running && state.captureMode === "png") statsEl.textContent = "ADB PNG error: " + error.message;
+        }
+    });
+}
+
+function switchToPngPopout(adbCommand, settings, canvas, container, statsEl) {
+    if (!state.running) return;
+    if (state.h264ProbeTimer) {
+        clearTimeout(state.h264ProbeTimer);
+        state.h264ProbeTimer = null;
+    }
+    if (state.adbProcess) {
+        try {
+            state.adbProcess.stdout.removeAllListeners();
+            state.adbProcess.stderr.removeAllListeners();
+            state.adbProcess.kill("SIGINT");
+        } catch (_) {}
+        state.adbProcess = null;
+    }
+    if (state.scrcpyCapture) {
+        state.scrcpyCapture.stop().catch(() => {});
+        state.scrcpyCapture = null;
+    }
+    if (state.decoder) {
+        state.decoder.destroy();
+        state.decoder = null;
+    }
+    state.captureMode = "png";
+    statsEl.textContent = "H.264 unavailable; switching to PNG fallback...";
+    startPngPopout(adbCommand, settings, canvas, container, statsEl);
+}
+
 function stopStream() {
     state.running = false;
+    state.captureMode = null;
     stopRotationPolling();
     stopControlServer();
     getAudioManager()?.stopAudioShare(runAdb);
+
+    if (state.h264ProbeTimer) {
+        clearTimeout(state.h264ProbeTimer);
+        state.h264ProbeTimer = null;
+    }
+    if (state.pngCaptureStop) {
+        state.pngCaptureStop();
+        state.pngCaptureStop = null;
+    }
 
     if (state.adbProcess) {
         try {
@@ -398,6 +539,11 @@ function stopStream() {
             state.adbProcess.kill("SIGINT");
         } catch (e) {}
         state.adbProcess = null;
+    }
+
+    if (state.scrcpyCapture) {
+        state.scrcpyCapture.stop().catch(() => {});
+        state.scrcpyCapture = null;
     }
 
     if (state.decoder) {

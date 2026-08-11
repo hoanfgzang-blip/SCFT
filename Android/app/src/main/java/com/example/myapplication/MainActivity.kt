@@ -115,6 +115,7 @@ class MainActivity : ComponentActivity() {
                     initialSessionId = source.getStringExtra("scft_session_id") ?: "",
                     initialGeneration = source.getLongExtra("scft_generation", 0L),
                     initialAttempt = source.getIntExtra("scft_attempt", 1),
+                    initialRawPort = source.getIntExtra("scft_raw_port", 7879),
                     autoStart = source.getBooleanExtra("scft_autostart", false),
                     modifier = Modifier.fillMaxSize()
                 )
@@ -135,14 +136,14 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun ScftApp(initialScreen: String?, initialDisplay: Int, initialDisplayId: String, initialBaseUrl: String, initialPresetId: String?, initialSessionId: String, initialGeneration: Long, initialAttempt: Int, autoStart: Boolean, modifier: Modifier = Modifier) {
+fun ScftApp(initialScreen: String?, initialDisplay: Int, initialDisplayId: String, initialBaseUrl: String, initialPresetId: String?, initialSessionId: String, initialGeneration: Long, initialAttempt: Int, initialRawPort: Int, autoStart: Boolean, modifier: Modifier = Modifier) {
     var currentScreen by rememberSaveable(initialScreen, initialSessionId, initialGeneration) {
         mutableStateOf(if (initialScreen == "pc") "pc" else "home")
     }
 
     if (currentScreen == "pc") {
         key(initialSessionId, initialGeneration, initialPresetId) {
-            PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, displayId = initialDisplayId, baseUrl = initialBaseUrl, initialPresetId = initialPresetId, sessionId = initialSessionId, generation = initialGeneration, attempt = initialAttempt, autoStart = autoStart, onBack = { currentScreen = "transfer" })
+            PcScreenViewerScreen(modifier = modifier, displayIndex = initialDisplay, displayId = initialDisplayId, baseUrl = initialBaseUrl, rawPort = initialRawPort, initialPresetId = initialPresetId, sessionId = initialSessionId, generation = initialGeneration, attempt = initialAttempt, autoStart = autoStart, onBack = { currentScreen = "transfer" })
         }
         return
     }

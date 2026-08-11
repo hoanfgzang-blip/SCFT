@@ -15,7 +15,12 @@ const state = {
     adbPath: null,
     running: false,
     adbProcess: null,
+    scrcpyCapture: null,
     decoder: null,
+    captureMode: null,
+    pngCaptureStop: null,
+    h264ProbeTimer: null,
+    h264Received: false,
     frameCount: 0,
     currentOrientation: null,
     controller: null
@@ -355,7 +360,7 @@ async function refreshDevice() {
 
         elements.deviceText.textContent = device;
         setStatus("ADB device ready.", true);
-        setMessage("Ready to stream Android screen over USB (H.264 WebCodecs).", "success");
+        setMessage("Ready to stream Android screen over USB (H.264 or PNG fallback).", "success");
     } catch (error) {
         setStatus("ADB unavailable.", false);
         setMessage(error.message, "error");
@@ -464,22 +469,92 @@ async function startPreview() {
         state.controller.setEnabled(true);
     }
 
-    try {
-        state.decoder = new H264StreamDecoder(elements.canvas, (stats) => {
-            elements.phoneShell.classList.add("has-frame");
-            elements.frameInfo.textContent = `${stats.frameCount} frames | ${stats.fps} FPS (${stats.width}×${stats.height})`;
+    const settings = getStreamSettings();
+    loadSettingsDisplay();
+    const adbCommand = state.adbPath || "adb";
 
-            updateOrientation(stats.width, stats.height);
-        });
+    const createDecoder = () => new H264StreamDecoder(elements.canvas, (stats) => {
+        elements.phoneShell.classList.add("has-frame");
+        elements.frameInfo.textContent = `${stats.frameCount} frames | ${stats.fps} FPS (${stats.width}×${stats.height})`;
+        updateOrientation(stats.width, stats.height);
+    });
+
+    const feedH264 = (chunk) => {
+        if (!state.running || !state.decoder) return;
+        if (chunk.length > 0) {
+            state.h264Received = true;
+            if (state.h264ProbeTimer) {
+                clearTimeout(state.h264ProbeTimer);
+                state.h264ProbeTimer = null;
+            }
+        }
+        state.decoder.feedChunk(chunk);
+    };
+
+    const scrcpyServerPath = SCFTScreenCaptureCompat.resolveScrcpyServerPath();
+    if (scrcpyServerPath) {
+        try {
+            state.decoder = createDecoder();
+            state.captureMode = "scrcpy-h264";
+            state.h264Received = false;
+            const maxSize = Math.max(...String(settings.resolution).split("x").map(Number).filter(Number.isFinite));
+            state.scrcpyCapture = await SCFTScreenCaptureCompat.startScrcpyH264Capture({
+                adbPath: adbCommand,
+                serverPath: scrcpyServerPath,
+                maxSize,
+                maxFps: settings.fps,
+                bitrate: settings.bitrate,
+                onData: feedH264,
+                onError: error => console.warn("SCFT scrcpy-server:", error.message),
+                onClose: () => {
+                    if (state.running && state.captureMode === "scrcpy-h264") stopPreview();
+                }
+            });
+            setMessage("Đang truyền H.264 qua scrcpy-server.", "success");
+            state.h264ProbeTimer = setTimeout(() => {
+                if (state.running && state.captureMode === "scrcpy-h264" && !state.h264Received) {
+                    console.warn("[SC] scrcpy-server produced no bytes; switching to PNG fallback.");
+                    switchToPngPreview(adbCommand, settings);
+                }
+            }, 4000);
+            startAudioShareSafely();
+            return;
+        } catch (error) {
+            console.warn("[SC] scrcpy-server unavailable; trying legacy capture:", error.message);
+            state.scrcpyCapture = null;
+            if (state.decoder) {
+                state.decoder.destroy();
+                state.decoder = null;
+            }
+            state.captureMode = null;
+        }
+    }
+
+    let rawH264Available = false;
+    try {
+        rawH264Available = (await SCFTScreenCaptureCompat.detectRawH264(adbCommand)).h264;
+    } catch (_) {
+        rawH264Available = false;
+    }
+
+    if (!rawH264Available) {
+        state.captureMode = "png";
+        setMessage("Thiết bị không hỗ trợ H.264 stdout; đang dùng fallback PNG tương thích.", "success");
+        startPngPreview(adbCommand, settings);
+        startAudioShareSafely();
+        return;
+    }
+
+    try {
+        state.decoder = createDecoder();
     } catch (err) {
         setMessage(err.message, "error");
         stopPreview();
         return;
     }
 
-    const settings = getStreamSettings();
-    loadSettingsDisplay();
-    const adbCommand = state.adbPath || "adb";
+    state.captureMode = "h264";
+    state.h264Received = false;
 
     const spawnArgs = [
         "exec-out",
@@ -493,10 +568,7 @@ async function startPreview() {
     try {
         state.adbProcess = spawn(adbCommand, spawnArgs, { windowsHide: true });
 
-        state.adbProcess.stdout.on("data", (chunk) => {
-            if (!state.running || !state.decoder) return;
-            state.decoder.feedChunk(chunk);
-        });
+        state.adbProcess.stdout.on("data", feedH264);
 
         state.adbProcess.stderr.on("data", (data) => {
             console.warn("ADB screenrecord stderr:", data.toString());
@@ -513,25 +585,91 @@ async function startPreview() {
             }
         });
 
-        // Trigger Audio Share safely after video stream spawn
-        try {
-            getAudioManager()?.startAudioShare(runAdb).catch((err) => {
-                console.warn("[SC] Audio share background error:", err);
-            });
-        } catch (audioErr) {
-            console.warn("[SC] Audio share sync error:", audioErr);
-        }
+        state.h264ProbeTimer = setTimeout(() => {
+            if (state.running && state.captureMode === "h264" && !state.h264Received) {
+                console.warn("[SC] H.264 screenrecord produced no bytes; switching to PNG fallback.");
+                switchToPngPreview(adbCommand, settings);
+            }
+        }, 4000);
+        startAudioShareSafely();
     } catch (err) {
         setMessage("Failed to spawn screenrecord: " + err.message, "error");
         stopPreview();
     }
 }
 
+function startAudioShareSafely() {
+    try {
+        getAudioManager()?.startAudioShare(runAdb).catch((err) => {
+            console.warn("[SC] Audio share background error:", err);
+        });
+    } catch (audioErr) {
+        console.warn("[SC] Audio share sync error:", audioErr);
+    }
+}
+
+function startPngPreview(adbCommand, settings) {
+    state.pngCaptureStop = SCFTScreenCaptureCompat.startPngCapture({
+        adbPath: adbCommand,
+        canvas: elements.canvas,
+        fps: settings.fps,
+        isActive: () => state.running && state.captureMode === "png",
+        onFrame: (stats) => {
+            state.frameCount = stats.frameCount;
+            elements.phoneShell.classList.add("has-frame");
+            elements.frameInfo.textContent = `${stats.frameCount} frames | ${stats.fps} FPS PNG (${stats.width}×${stats.height})`;
+            updateOrientation(stats.width, stats.height);
+        },
+        onError: (error) => {
+            if (state.running && state.captureMode === "png") {
+                setMessage("Không chụp được màn hình Android qua ADB: " + error.message, "error");
+            }
+        }
+    });
+}
+
+function switchToPngPreview(adbCommand, settings) {
+    if (!state.running) return;
+    if (state.h264ProbeTimer) {
+        clearTimeout(state.h264ProbeTimer);
+        state.h264ProbeTimer = null;
+    }
+    if (state.adbProcess) {
+        try {
+            state.adbProcess.stdout.removeAllListeners();
+            state.adbProcess.stderr.removeAllListeners();
+            state.adbProcess.kill("SIGINT");
+        } catch (_) {}
+        state.adbProcess = null;
+    }
+    if (state.scrcpyCapture) {
+        state.scrcpyCapture.stop().catch(() => {});
+        state.scrcpyCapture = null;
+    }
+    if (state.decoder) {
+        state.decoder.destroy();
+        state.decoder = null;
+    }
+    state.captureMode = "png";
+    setMessage("H.264 không trả dữ liệu; đang chuyển sang fallback PNG tương thích.", "success");
+    startPngPreview(adbCommand, settings);
+}
+
 function stopPreview() {
     state.running = false;
+    state.captureMode = null;
     stopRotationPolling();
     stopControlServer();
     getAudioManager()?.stopAudioShare(runAdb);
+
+    if (state.h264ProbeTimer) {
+        clearTimeout(state.h264ProbeTimer);
+        state.h264ProbeTimer = null;
+    }
+    if (state.pngCaptureStop) {
+        state.pngCaptureStop();
+        state.pngCaptureStop = null;
+    }
 
     if (state.adbProcess) {
         try {
@@ -540,6 +678,11 @@ function stopPreview() {
             state.adbProcess.kill("SIGINT");
         } catch (e) {}
         state.adbProcess = null;
+    }
+
+    if (state.scrcpyCapture) {
+        state.scrcpyCapture.stop().catch(() => {});
+        state.scrcpyCapture = null;
     }
 
     if (state.decoder) {

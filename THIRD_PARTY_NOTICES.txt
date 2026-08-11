@@ -11,3 +11,8 @@ Package Manager. The driver is distributed by its upstream project under the
 MIT License. SCFT does not modify the signed driver binaries.
 Project: https://github.com/VirtualDrivers/Virtual-Display-Driver
 License: https://github.com/VirtualDrivers/Virtual-Display-Driver/blob/master/LICENSE
+
+SCFT bundles the scrcpy-server component for Android screen streaming.
+scrcpy-server is distributed by Genymobile under the Apache License 2.0.
+Project: https://github.com/Genymobile/scrcpy
+License: https://github.com/Genymobile/scrcpy/blob/master/LICENSE

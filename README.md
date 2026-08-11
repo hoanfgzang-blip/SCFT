@@ -58,13 +58,15 @@ web_app/page/Screen_Copy/SC.js
 web_app/page/Screen_Copy/SC.css
 ```
 
-Screen Copy dang di theo huong tu build bang ADB, khong phu thuoc scrcpy. Prototype hien tai dung:
+Screen Copy dang di theo huong truyen truc tiep qua ADB. SCFT bundle `scrcpy-server` de tao luong H.264 tu MediaCodec tren Android, sau do WebCodecs giai ma tren Electron.
 
 ```text
-Desktop Electron -> adb exec-out screencap -p -> Android screen PNG frames
+Android screen -> scrcpy-server/MediaCodec -> H.264 qua ADB -> WebCodecs -> Electron canvas
 ```
 
-Day la buoc dau de co preview man hinh qua USB. Cac buoc tiep theo neu muon giong scrcpy hon la tach service Android, encode frame va gui input command qua ADB transport.
+SCFT uu tien `scrcpy-server` H.264 tren Android moi va cu. Neu server khong khoi dong duoc, app thu `screenrecord --output-format=h264` tren thiet bi co ho tro stdout; cuoi cung moi fallback sang `adb exec-out screencap -p` voi FPS thap hon.
+
+Audio Share uu tien socket audio cua `scrcpy-server` voi PCM 48 kHz stereo de phat qua WebAudio; `scft-simple-audio.jar` chi con la fallback cho thiet bi cu.
 
 Chay app Electron:
 
@@ -151,20 +153,21 @@ GET /api/screen/status
 GET /api/screen/frame
 GET /api/screen/view
 GET /api/screen/stream
+TCP 7879 raw H.264 (duong frame USB low-latency)
 ```
 
 Luong chinh qua USB:
 
 ```text
-Windows VDD -> man hinh phu that cua Windows
+Windows VDD -> DXGI Desktop Duplication
              -> SCFT backend H.264
-             -> adb reverse TCP 7878 qua cap USB
-             -> ung dung SCFT Android
+             -> raw H.264 socket TCP 7879 qua adb reverse USB
+             -> MediaCodec Android -> SurfaceView
 ```
 
 Mo trang `PCScreen.html`, bam `Bat dau`. SCFT se chuyen Windows sang topology Extend de gan man hinh VDD cho phien truyen, sau do tu chon man hinh ao vua xuat hien. Khi bam `Ket thuc`, khi khoi dong phien that bai hoac khi thoat SCFT, Windows tro ve topology Internal; man hinh ao khong con xuat hien va trang thai nay duoc giu sau khi khoi dong lai. Driver VDD van duoc cai san vi ban driver ky hien tai khong ho tro go/nap lai an toan trong tung phien.
 
-Khi dien thoai da bat USB debugging va chap nhan khoa ADB, SCFT tu chay `adb reverse tcp:7878 tcp:7878` roi mo PC Screen tren Android. Khong can Test Mode va khong can HDMI dummy.
+Khi dien thoai da bat USB debugging va chap nhan khoa ADB, SCFT tu chay ca `adb reverse tcp:7878 tcp:7878` (dieu khien/telemetry) va `adb reverse tcp:7879 tcp:7879` (frame H.264), roi mo PC Screen tren Android. Khong can Test Mode va khong can HDMI dummy.
 
 Neu khong dung USB, app hien URL LAN co san chi so man hinh; dien thoai va PC phai o cung mang. Android viewer cung cho phep nhap dia chi backend LAN.
 

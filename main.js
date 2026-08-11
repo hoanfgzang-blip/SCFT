@@ -700,25 +700,29 @@ async function resolvePcScreenDisplayConfig(config, screensBefore = []) {
 
     while (Date.now() < deadline) {
         const status = await backendJson('http://127.0.0.1:7878/api/screen/status').catch(() => null);
-        screens = Array.isArray(status?.screens) ? status.screens : [];
+        screens = (Array.isArray(status?.screens) ? status.screens : [])
+            .filter(item => Number(item?.index) > 0);
         const newScreen = screens.find(item => !previousIds.has(String(item?.id || '')));
         if (newScreen) {
             return { ...config, displayIndex: Number(newScreen.index), displayId: newScreen.id || '' };
         }
-        if (screens.length > screensBefore.length) break;
+        if (screens.length > screensBefore.filter(item => Number(item?.index) > 0).length) break;
         await new Promise(resolve => setTimeout(resolve, 250));
     }
 
-    const requested = screens.find(item => String(item?.id || '') === String(config.displayId || ''));
+    const requested = screens.find(item => Number(item?.index) > 0
+        && String(item?.id || '') === String(config.displayId || ''));
     if (requested) {
         return { ...config, displayIndex: Number(requested.index), displayId: requested.id || '' };
     }
 
-    const secondary = screens.find(item => Number(item?.index) !== 0);
+    const secondary = screens.find(item => Number(item?.index) > 0);
     if (secondary) {
         return { ...config, displayIndex: Number(secondary.index), displayId: secondary.id || '' };
     }
-    return { ...config };
+    const error = new Error('Không tìm thấy màn hình phụ VDD. SCFT không chiếu lên màn hình chính.');
+    error.code = 'VDD_NOT_READY';
+    throw error;
 }
 
 async function deleteBackendSession(sessionId) {
@@ -856,6 +860,7 @@ async function launchPcScreenAttempt(event, serial, config, presetId, attempt, o
             '--es', 'scft_session_id', session.sessionId,
             '--el', 'scft_generation', String(session.generation || 0),
             '--ei', 'scft_attempt', String(attempt),
+            '--ei', 'scft_raw_port', String(session.rawStreamPort || 7879),
             '--ez', 'scft_autostart', 'true',
             '--es', 'scft_base_url', 'http://127.0.0.1:7878'
         ];
@@ -906,6 +911,7 @@ async function applyPcScreen(event, config) {
         emitPcScreenProgress(event, 'usb', 'Đang thiết lập kết nối USB...');
         try {
             await runAdbPromise(['-s', serial, 'reverse', 'tcp:7878', 'tcp:7878']);
+            await runAdbPromise(['-s', serial, 'reverse', 'tcp:7879', 'tcp:7879']);
         } catch (error) {
             error.code = 'USB_REVERSE_FAILED';
             error.message = 'Không thể thiết lập ADB reverse qua USB. Hãy kiểm tra cáp USB rồi bấm Thử lại.';

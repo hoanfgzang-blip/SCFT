@@ -15,14 +15,14 @@ try {
 } catch (e) {}
 
 /**
- * SCAudioManager — Option A: adb exec-out stdout PCM pipe
+ * SCAudioManager — scrcpy-server raw PCM audio with legacy JAR fallback
  *
  * Architecture (simple, no sockets):
- *   Phone: app_process runs SimpleAudioCapture → writes raw PCM to stdout
+ *   Phone: scrcpy-server runs AudioRecord → writes raw PCM to an ADB socket
  *   PC:    adb exec-out pipes that stdout directly to Node.js
  *   PC:    Node.js feeds chunks to WebAudio API → PC speakers
  *
- * Requires: build-resources/scft-simple-audio.jar (build with build-audio-jar.ps1)
+ * The legacy SimpleAudioCapture JAR is retained only as a fallback.
  */
 class SCAudioManager {
     constructor() {
@@ -30,6 +30,7 @@ class SCAudioManager {
         this.audioContext = null;
         this.gainNode = null;
         this.adbProcess = null;  // adb exec-out process
+        this.scrcpyCapture = null;
         this.nextStartTime = 0;
         this.pcmRemainder = null;
         this.receivedFrames = 0;
@@ -71,6 +72,39 @@ class SCAudioManager {
         }
     }
 
+    async prepareAudioContext() {
+        try {
+            const AudioContextClass = (typeof window !== "undefined")
+                ? (window.AudioContext || window.webkitAudioContext) : null;
+            if (AudioContextClass) {
+                this.audioContext = new AudioContextClass({ sampleRate: 48000 });
+                this.gainNode = this.audioContext.createGain();
+                this.gainNode.gain.setValueAtTime(this.getSystemVolumeSetting(), this.audioContext.currentTime);
+                this.gainNode.connect(this.audioContext.destination);
+                const outputDeviceId = (typeof localStorage !== "undefined")
+                    ? localStorage.getItem("SCFT_OutputDevice") : null;
+                if (outputDeviceId && this.audioContext.setSinkId) {
+                    await this.audioContext.setSinkId(outputDeviceId);
+                }
+                if (this.audioContext.state === "suspended") {
+                    await this.audioContext.resume();
+                }
+                this.nextStartTime = this.audioContext.currentTime;
+                console.log("[SCAudioManager] WebAudio context ready, sampleRate=48000");
+            }
+        } catch (err) {
+            console.warn("[SCAudioManager] WebAudio setup error:", err.message);
+        }
+    }
+
+    async closeAudioOutput() {
+        if (this.audioContext) {
+            try { await this.audioContext.close(); } catch (e) {}
+            this.audioContext = null;
+            this.gainNode = null;
+        }
+    }
+
     async startAudioShare(runAdbFn) {
         try {
             if (!this.isAudioShareEnabled()) {
@@ -85,6 +119,43 @@ class SCAudioManager {
 
             const adbBin = (typeof process !== "undefined" && process.env.SCFT_ADB_PATH)
                 ? process.env.SCFT_ADB_PATH : "adb";
+
+            const compat = (typeof SCFTScreenCaptureCompat !== "undefined")
+                ? SCFTScreenCaptureCompat : null;
+            if (compat?.startScrcpyAudioCapture) {
+                try {
+                    await this.prepareAudioContext();
+                    this.active = true;
+                    this.updateAudioStatus("Đang kết nối audio scrcpy-server...");
+                    this.scrcpyCapture = await compat.startScrcpyAudioCapture({
+                        adbPath: adbBin,
+                        serverPath: compat.resolveScrcpyServerPath?.(),
+                        startupDelayMs: 900,
+                        onData: chunk => {
+                            if (this.active) this.playPcmChunk(chunk);
+                        },
+                        onError: error => {
+                            console.warn("[SCAudioManager] scrcpy-server audio:", error.message);
+                            if (this.active) this.updateAudioStatus("Lỗi audio: " + error.message.substring(0, 60));
+                        },
+                        onClose: () => {
+                            if (this.active) {
+                                this.active = false;
+                                this.updateAudioStatus("Luồng audio kết thúc");
+                            }
+                        }
+                    });
+                    this.updateAudioStatus("Đang phát âm thanh hệ thống 🔊");
+                    console.log("[SCAudioManager] scrcpy-server raw PCM audio started.");
+                    return true;
+                } catch (scrcpyErr) {
+                    console.warn("[SCAudioManager] scrcpy-server audio unavailable:", scrcpyErr.message);
+                    this.active = false;
+                    this.scrcpyCapture = null;
+                    await this.closeAudioOutput();
+                    this.updateAudioStatus("Không khởi động được audio scrcpy");
+                }
+            }
 
             // Step 1: Find and push the simple audio JAR
             const jarFile = this.simpleJarPath || this.resolveSimpleJarPath();
@@ -247,7 +318,7 @@ class SCAudioManager {
     }
 
     async stopAudioShare(runAdbFn) {
-        if (!this.active) return;
+        if (!this.active && !this.scrcpyCapture && !this.adbProcess && !this.audioContext) return;
         this.active = false;
         this.updateAudioStatus("Đã tắt");
 
@@ -256,11 +327,12 @@ class SCAudioManager {
             this.adbProcess = null;
         }
 
-        if (this.audioContext) {
-            try { await this.audioContext.close(); } catch (e) {}
-            this.audioContext = null;
-            this.gainNode = null;
+        if (this.scrcpyCapture) {
+            try { await this.scrcpyCapture.stop(); } catch (e) {}
+            this.scrcpyCapture = null;
         }
+
+        await this.closeAudioOutput();
     }
 }
 

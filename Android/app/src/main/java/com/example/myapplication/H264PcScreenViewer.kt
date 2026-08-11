@@ -43,6 +43,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.ArrayDeque
@@ -53,6 +55,7 @@ import kotlin.math.abs
 import kotlin.math.max
 
 private const val DEFAULT_PC_SCREEN_BASE_URL = "http://127.0.0.1:7878"
+private const val DEFAULT_PC_SCREEN_RAW_PORT = 7879
 private const val PC_SCREEN_LOG_TAG = "SCFT-PC-SCREEN"
 private const val READ_BUFFER_BYTES = 32 * 1024
 private const val DEFAULT_PENDING_H264_BYTES = 768 * 1024
@@ -120,13 +123,13 @@ private data class PcScreenPreset(
 }
 
 @Composable
-fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, displayId: String = "", baseUrl: String = DEFAULT_PC_SCREEN_BASE_URL, initialPresetId: String? = null, sessionId: String = "", generation: Long = 0L, attempt: Int = 1, autoStart: Boolean = false, onBack: () -> Unit) {
+fun PcScreenViewerScreen(modifier: Modifier = Modifier, displayIndex: Int = 0, displayId: String = "", baseUrl: String = DEFAULT_PC_SCREEN_BASE_URL, rawPort: Int = DEFAULT_PC_SCREEN_RAW_PORT, initialPresetId: String? = null, sessionId: String = "", generation: Long = 0L, attempt: Int = 1, autoStart: Boolean = false, onBack: () -> Unit) {
     var serverBaseUrl by remember { mutableStateOf(baseUrl) }
-    H264PcScreenViewer(modifier, displayIndex, displayId, serverBaseUrl, initialPresetId, sessionId, generation, attempt, autoStart, onBack, { serverBaseUrl = it })
+    H264PcScreenViewer(modifier, displayIndex, displayId, serverBaseUrl, rawPort, initialPresetId, sessionId, generation, attempt, autoStart, onBack, { serverBaseUrl = it })
 }
 
 @Composable
-private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId: String, baseUrl: String, initialPresetId: String?, sessionId: String, generation: Long, attempt: Int, autoStart: Boolean, onBack: () -> Unit, onBaseUrlChanged: (String) -> Unit) {
+private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId: String, baseUrl: String, rawPort: Int, initialPresetId: String?, sessionId: String, generation: Long, attempt: Int, autoStart: Boolean, onBack: () -> Unit, onBaseUrlChanged: (String) -> Unit) {
     val view = LocalView.current
     var holder by remember { mutableStateOf<SurfaceHolder?>(null) }
     var player by remember { mutableStateOf<LowLatencyH264Player?>(null) }
@@ -174,6 +177,7 @@ private fun H264PcScreenViewer(modifier: Modifier, displayIndex: Int, displayId:
             generation = generation,
             attempt = attempt,
             baseUrl = serverUrl,
+            rawPort = rawPort,
             fps = streamFps,
             streamWidth = streamDimensions.first,
             streamHeight = streamDimensions.second,
@@ -358,6 +362,7 @@ private class LowLatencyH264Player(
     private val generation: Long,
     private val attempt: Int,
     private val baseUrl: String,
+    private val rawPort: Int,
     private val fps: Int,
     private val streamWidth: Int,
     private val streamHeight: Int,
@@ -372,7 +377,7 @@ private class LowLatencyH264Player(
     @Volatile private var readerThread: Thread? = null
     private var latencyThread: Thread? = null
     @Volatile private var latestNetworkRttMs = -1L
-    private var connection: HttpURLConnection? = null
+    @Volatile private var rawSocket: Socket? = null
     private var codec: MediaCodec? = null
     private val transportReadWaitMs = AtomicLong(0L)
 
@@ -417,16 +422,26 @@ private class LowLatencyH264Player(
                 decoder.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_LOW_LATENCY, 1) })
             }
             val aspect = if (streamWidth.toFloat() / streamHeight.toFloat() > 1.7f) "16:9" else "16:10"
-            val http = URL(preset.streamUrl(baseUrl, displayIndex, displayId, sessionId, generation, aspect, fps)).openConnection() as HttpURLConnection
-            connection = http
-            http.connectTimeout = 5000
-            http.readTimeout = 10000
-            http.useCaches = false
-            http.doInput = true
-            http.connect()
-            if (http.responseCode !in 200..299) throw IllegalStateException("Stream HTTP ${http.responseCode}")
-            val captureSetupMs = http.getHeaderField("X-SCFT-Capture-Setup-Ms")?.toLongOrNull() ?: -1L
-            val encodeSetupMs = http.getHeaderField("X-SCFT-Encode-Setup-Ms")?.toLongOrNull() ?: -1L
+            val streamUrl = preset.streamUrl(baseUrl, displayIndex, displayId, sessionId, generation, aspect, fps)
+            val requestPath = streamUrl.substringAfter(cleanPcBaseUrl(baseUrl), streamUrl)
+            val raw = Socket()
+            raw.tcpNoDelay = true
+            raw.keepAlive = false
+            raw.connect(InetSocketAddress(URL(cleanPcBaseUrl(baseUrl)).host, rawPort), 5000)
+            raw.soTimeout = 5000
+            rawSocket = raw
+            val input = raw.getInputStream()
+            val output = raw.getOutputStream()
+            output.write("SCFT-H264 $requestPath\r\n".toByteArray(Charsets.US_ASCII))
+            output.flush()
+            val responseHeader = readRawHeader(input)
+            if (!responseHeader.startsWith("SCFT/1 200 ")) {
+                val status = responseHeader.lineSequence().firstOrNull() ?: "SCFT/1 unknown"
+                throw IllegalStateException("Stream raw $status")
+            }
+            raw.soTimeout = 0
+            val captureSetupMs = rawHeaderValue(responseHeader, "X-SCFT-Capture-Setup-Ms")?.toLongOrNull() ?: -1L
+            val encodeSetupMs = rawHeaderValue(responseHeader, "X-SCFT-Encode-Setup-Ms")?.toLongOrNull() ?: -1L
 
             val chunks = EncodedChunkQueue(preset.pendingLimitBytes)
             val readerDone = AtomicBoolean(false)
@@ -434,16 +449,14 @@ private class LowLatencyH264Player(
             val reader = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
                 try {
-                    http.inputStream.use { input ->
-                        val readBuffer = ByteArray(READ_BUFFER_BYTES)
-                        while (running.get()) {
-                            val readStartedAt = SystemClock.elapsedRealtime()
-                            val read = input.read(readBuffer)
-                            transportReadWaitMs.addAndGet(SystemClock.elapsedRealtime() - readStartedAt)
-                            if (read <= 0) break
-                            lastDataAt = SystemClock.elapsedRealtime()
-                            chunks.push(readBuffer.copyOf(read))
-                        }
+                    val readBuffer = ByteArray(READ_BUFFER_BYTES)
+                    while (running.get()) {
+                        val readStartedAt = SystemClock.elapsedRealtime()
+                        val read = input.read(readBuffer)
+                        transportReadWaitMs.addAndGet(SystemClock.elapsedRealtime() - readStartedAt)
+                        if (read <= 0) break
+                        lastDataAt = SystemClock.elapsedRealtime()
+                        chunks.push(readBuffer.copyOf(read))
                     }
                 } catch (_: Exception) {
                 } finally {
@@ -726,10 +739,10 @@ private class LowLatencyH264Player(
 
     private fun closeResources() {
         try {
-            connection?.disconnect()
+            rawSocket?.close()
         } catch (_: Exception) {
         }
-        connection = null
+        rawSocket = null
         val reader = readerThread
         readerThread = null
         if (reader != null && reader !== Thread.currentThread()) {
@@ -749,6 +762,33 @@ private class LowLatencyH264Player(
         } catch (_: Exception) {
         }
         codec = null
+    }
+
+    private fun readRawHeader(input: java.io.InputStream): String {
+        val header = java.io.ByteArrayOutputStream(1024)
+        var previous = 0
+        var current = input.read()
+        while (current >= 0 && header.size() < 16 * 1024) {
+            header.write(current)
+            if (previous == '\r'.code && current == '\n'.code) {
+                val bytes = header.toByteArray()
+                val size = bytes.size
+                if (size >= 4 && bytes[size - 4] == '\r'.code.toByte() && bytes[size - 3] == '\n'.code.toByte()
+                    && bytes[size - 2] == '\r'.code.toByte() && bytes[size - 1] == '\n'.code.toByte()) {
+                    return bytes.toString(Charsets.US_ASCII)
+                }
+            }
+            previous = current
+            current = input.read()
+        }
+        throw IllegalStateException("Raw H264 response header incomplete")
+    }
+
+    private fun rawHeaderValue(header: String, name: String): String? {
+        return header.lineSequence()
+            .firstOrNull { it.startsWith("$name:", ignoreCase = true) }
+            ?.substringAfter(':')
+            ?.trim()
     }
 
     private fun findStartCode(data: ByteArray, from: Int, limit: Int): Int {
