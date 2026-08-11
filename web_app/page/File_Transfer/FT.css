@@ -32,7 +32,7 @@
 
 .ft-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.6fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 20px;
 }
 

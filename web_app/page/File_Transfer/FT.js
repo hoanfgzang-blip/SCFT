@@ -47,36 +47,19 @@ async function initFileTransfer() {
 
 async function checkBackend() {
     const statusText = document.getElementById("backend_status_text");
-    const statusBadge = document.getElementById("backend_status_badge");
 
     try {
-        const [healthResponse, deviceResponse] = await Promise.all([
-            fetch(`${BACKEND_URL}/api/health`),
-            fetch(`${BACKEND_URL}/api/device`)
-        ]);
+        const healthResponse = await fetch(`${BACKEND_URL}/api/health`);
 
-        if (!healthResponse.ok || !deviceResponse.ok) {
+        if (!healthResponse.ok) {
             throw new Error("Backend is not ready");
         }
 
-        const device = await deviceResponse.json();
         backendOnline = true;
         statusText.textContent = `Backend online at ${BACKEND_URL}`;
-        statusBadge.textContent = "Online";
-        statusBadge.classList.remove("offline");
-        statusBadge.classList.add("online");
-        document.getElementById("device_id_text").textContent = device.id || "-";
-        document.getElementById("device_ip_text").textContent = device.ip || "-";
-        document.getElementById("device_port_text").textContent = device.port || "7878";
     } catch (error) {
         backendOnline = false;
         statusText.textContent = "Backend offline. Start backend/run.ps1 first.";
-        statusBadge.textContent = "Offline";
-        statusBadge.classList.remove("online");
-        statusBadge.classList.add("offline");
-        document.getElementById("device_id_text").textContent = "-";
-        document.getElementById("device_ip_text").textContent = "-";
-        document.getElementById("device_port_text").textContent = "7878";
     }
 
     updateUploadControls();
