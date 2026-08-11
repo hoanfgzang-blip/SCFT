@@ -204,7 +204,10 @@ public final class ScftBackendServer {
                 throw new IllegalArgumentException("Missing Android device id");
             }
 
-            boolean newConnection = !androidConnected || !nextDeviceId.equals(androidDeviceId);
+            boolean previousConnectionActive = androidConnected
+                    && androidLastSeenMs > 0
+                    && now - androidLastSeenMs <= ANDROID_STATUS_TIMEOUT_MS;
+            boolean newConnection = !previousConnectionActive || !nextDeviceId.equals(androidDeviceId);
             androidConnected = true;
             androidDeviceId = nextDeviceId;
             androidDeviceName = params.getOrDefault("deviceName", "Android").trim();
@@ -215,6 +218,9 @@ public final class ScftBackendServer {
             }
         } else {
             androidConnected = false;
+            androidDeviceId = "";
+            androidDeviceName = "";
+            androidConnectedAtMs = 0L;
             androidLastSeenMs = now;
         }
 

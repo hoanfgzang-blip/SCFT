@@ -20,6 +20,10 @@ let pcScreenActive = null;
 let pcScreenMonitorTimer = null;
 let pcScreenMonitorBusy = false;
 let pcScreenRecoveryPromise = null;
+let androidStatusTimer = null;
+let androidStatusSyncBusy = false;
+let lastAndroidSerial = "";
+let androidSessionStartedAt = 0;
 let vddTopologySessionActive = false;
 const VDD_WINGET_ID = 'VirtualDrivers.Virtual-Display-Driver';
 const VDD_VERSION = '25.7.23';
@@ -564,14 +568,61 @@ function startUsbTunnel() {
     runAdb(['devices'], (error, stdout) => {
         if (error) return;
 
-        const hasDevice = stdout
-            .split(/\r?\n/)
-            .some(line => /\tdevice$/.test(line.trim()));
+        const serial = getAuthorizedPhysicalSerial(stdout);
+        if (!serial) return;
 
-        if (!hasDevice) return;
-
-        runAdb(['reverse', 'tcp:7878', 'tcp:7878'], () => {});
+        runAdb(['-s', serial, 'reverse', 'tcp:7878', 'tcp:7878'], () => {});
     });
+}
+
+function getAuthorizedPhysicalSerial(stdout) {
+    return (stdout || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .map(line => line.match(/^(\S+)\s+device$/))
+        .map(match => match ? match[1] : '')
+        .find(serial => serial && !serial.startsWith('emulator-') && !serial.includes(':')) || '';
+}
+
+async function syncAndroidStatusFromMainProcess() {
+    if (androidStatusSyncBusy) return;
+    androidStatusSyncBusy = true;
+
+    try {
+        const result = await runAdbPromise(['devices']);
+        const serial = getAuthorizedPhysicalSerial(result.stdout);
+
+        if (!serial) {
+            lastAndroidSerial = "";
+            androidSessionStartedAt = 0;
+            await fetch('http://127.0.0.1:7878/api/android/status?connected=false', { method: 'POST' }).catch(() => {});
+            return;
+        }
+
+        if (serial !== lastAndroidSerial) {
+            lastAndroidSerial = serial;
+            androidSessionStartedAt = Date.now();
+        }
+
+        await runAdbPromise(['-s', serial, 'reverse', 'tcp:7878', 'tcp:7878']);
+        const params = new URLSearchParams({
+            connected: 'true',
+            deviceId: serial,
+            deviceName: 'Android',
+            connectedAtMs: String(androidSessionStartedAt)
+        });
+        await fetch(`http://127.0.0.1:7878/api/android/status?${params.toString()}`, { method: 'POST' }).catch(() => {});
+    } catch (_) {
+        // The renderer and backend may still be starting; the next tick retries.
+    } finally {
+        androidStatusSyncBusy = false;
+    }
+}
+
+function startAndroidStatusMonitor() {
+    if (androidStatusTimer) return;
+    syncAndroidStatusFromMainProcess();
+    androidStatusTimer = setInterval(syncAndroidStatusFromMainProcess, 3000);
 }
 
 function runAdbPromise(args) {
@@ -987,6 +1038,7 @@ app.whenReady().then(async () => {
     await detachStaleVirtualDisplayOnStartup().catch(() => {});
     startBackend();
     startUsbTunnel();
+    startAndroidStatusMonitor();
     createWindow();
 
     ipcMain.handle('scft-virtual-display-start', async () => startVirtualDisplay());

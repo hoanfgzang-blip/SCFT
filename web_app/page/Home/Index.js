@@ -60,12 +60,9 @@ function stopLiveUpdates() {
 }
 
 function handleVisibilityChange() {
-    if (document.hidden) {
-        stopLiveUpdates();
-        return;
-    }
-
-    startLiveUpdates();
+    // Keep the ADB heartbeat alive while Electron is minimized or covered by
+    // another window. The backend expires Android status after 10 seconds.
+    if (!document.hidden) refreshStatus(false);
 }
 
 async function refreshStatus(showChecking) {
@@ -166,9 +163,6 @@ async function checkAndroid() {
             .find(line => isUsbAdbDeviceLine(line));
 
         if (!connected) {
-            if (state.androidDeviceId) {
-                localStorage.removeItem(`SCFT_AndroidConnectedAt_${state.androidDeviceId}`);
-            }
             state.androidOnline = false;
             state.captureOnline = false;
             state.androidDeviceId = "";
@@ -181,15 +175,14 @@ async function checkAndroid() {
         }
 
         const deviceId = connected.split("\t")[0];
+        // There may be both a physical phone and an Android emulator. Always
+        // bind the reverse tunnel to the authorized physical device.
+        await runAdb(["-s", deviceId, "reverse", "tcp:7878", "tcp:7878"]);
         const properties = await runAdb(["-s", deviceId, "shell", "getprop"]);
         const deviceName = getAndroidDeviceName(deviceId, properties);
-        const storageKey = `SCFT_AndroidConnectedAt_${deviceId}`;
-        const savedConnectedAtMs = Number(localStorage.getItem(storageKey));
         const isNewDevice = !state.androidOnline || state.androidDeviceId !== deviceId;
         if (isNewDevice) {
-            const connectedAtMs = savedConnectedAtMs > 0 ? savedConnectedAtMs : Date.now();
-            localStorage.setItem(storageKey, String(connectedAtMs));
-            state.androidConnectedAt = new Date(connectedAtMs);
+            state.androidConnectedAt = new Date();
         }
         state.androidDeviceId = deviceId;
         state.androidOnline = true;
